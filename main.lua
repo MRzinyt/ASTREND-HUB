@@ -1,4 +1,4 @@
--- main.lua | Luau | Roblox client/executor | ASTREND HUB v2.3 (sem evasao de anti-cheat)
+-- main.lua | Luau | Roblox client/executor | ASTREND HUB v2.4 (sem evasao de anti-cheat)
 -- Logo: publique ASTREND-LOGO-UPLOAD.png no Roblox Creator Dashboard e informe o ImageId.
 -- Funcoes que alteram dados persistentes exigem o servidor ASTREND autorizado.
 
@@ -19,7 +19,7 @@ local Config = {
     Brand = {
         LogoImageId = 0, -- Substitua pelo ID da imagem publicada no Roblox.
         Title = "ASTREND HUB",
-        Subtitle = "CONTROL CENTER  /  v2.3",
+        Subtitle = "CONTROL CENTER  /  v2.4",
     },
     Theme = {
         RGB = false,
@@ -68,6 +68,13 @@ local Config = {
         AutoHeal = false,
         AutoHealThreshold = 35,
         InfiniteAmmo = false,
+        DesiredLevel = 10,
+    },
+    LocalTest = {
+        GodMode = false,
+        AutoHeal = false,
+        Needs = false,
+        Level = false,
         DesiredLevel = 10,
     },
 }
@@ -775,7 +782,7 @@ toggle(combat, "Silent: ignorar equipe", function() return Config.Silent.TeamChe
 
 -- Visuals: modelo 3D em vez de caixas 2D calculadas pela CPU.
 local visuals = tabPages.Visuals
-section(visuals, "CHAMS ESP 3D", "Contorno no proprio personagem; sem projecao por frame.")
+section(visuals, "CHAMS ESP 3D", "O Sintonia RP detectou ESP (erro 267). Pode expulsar novamente.")
 toggle(visuals, "Ativar ESP", function() return Config.ESP.Enabled end, function(v) Config.ESP.Enabled = v end)
 toggle(visuals, "Mostrar Chams 3D", function() return Config.ESP.ShowChams end, function(v) Config.ESP.ShowChams = v end)
 toggle(visuals, "Ver atraves de paredes", function() return Config.ESP.ThroughWalls end, function(v) Config.ESP.ThroughWalls = v end)
@@ -851,6 +858,140 @@ buttonControl(playerPage, "APLICAR NIVEL NO SERVIDOR", function()
     end
     Config.Player.DesiredLevel = math.clamp(math.floor(amount), 1, 999)
     serverAction("SetLevel", Config.Player.DesiredLevel)
+end)
+
+-- Compatibilidade com a PRIMEIRA rotina enviada: alteracao somente dos valores locais.
+-- Em servidor de terceiros, nenhuma mudanca e garantida ou persistente.
+local function matchesStat(name, kind)
+    local normalized = string.lower(tostring(name)):gsub("[%s_%-]", "")
+    local patterns = {
+        Hunger = {"fome", "comida", "hunger", "food"},
+        Thirst = {"sede", "agua", "água", "thirst", "water"},
+        Level = {"nivel", "nível", "level", "lvl"},
+        XP = {"xp", "exp", "experience", "experiencia", "experiência"},
+    }
+    for _, candidate in ipairs(patterns[kind] or {}) do
+        if normalized == candidate then return true end
+    end
+    return false
+end
+
+local function writeLocalStats(kind, value)
+    local found, changed = 0, 0
+    -- Values dentro do Player (inclusive leaderstats), como no codigo original.
+    for _, item in ipairs(LocalPlayer:GetDescendants()) do
+        if (item:IsA("IntValue") or item:IsA("NumberValue")) and matchesStat(item.Name, kind) then
+            found += 1
+            local ok = pcall(function()
+                if item.Value ~= value then item.Value = value end
+            end)
+            if ok then changed += 1 end
+        end
+    end
+    -- Alguns sistemas locais usam Attributes em vez de NumberValues.
+    local containers = {LocalPlayer, LocalPlayer.Character}
+    for _, container in ipairs(containers) do
+        if container then
+            for name, current in pairs(container:GetAttributes()) do
+                if type(current) == "number" and matchesStat(name, kind) then
+                    found += 1
+                    local ok = pcall(function() container:SetAttribute(name, value) end)
+                    if ok then changed += 1 end
+                end
+            end
+        end
+    end
+    return found, changed
+end
+
+local function healLocal()
+    local character = LocalPlayer.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    if not humanoid or humanoid.Health <= 0 then return false end
+    local ok = pcall(function() humanoid.Health = humanoid.MaxHealth end)
+    return ok
+end
+
+local function localFeedback(label, count)
+    if count == 0 then
+        setStatus(label .. ": nenhum valor local compativel foi encontrado.", Color3.fromRGB(255, 181, 91))
+    else
+        setStatus(label .. ": " .. count .. " valor(es) ajustado(s) apenas neste cliente. O servidor pode reverter.",
+            Color3.fromRGB(255, 181, 91))
+    end
+end
+
+section(playerPage, "Teste local (primeira rotina)", "Altera Humanoid, NumberValue ou Attribute apenas no cliente. Sem efeito garantido no servidor.")
+toggle(playerPage, "God Mode local (teste)", function() return Config.LocalTest.GodMode end, function(value)
+    Config.LocalTest.GodMode = value
+    setStatus(value and "Tentativa de God Mode local ativada; o servidor continua autoritativo."
+        or "God Mode local desativado.", Color3.fromRGB(255, 181, 91))
+end)
+toggle(playerPage, "Auto-Heal local", function() return Config.LocalTest.AutoHeal end, function(value)
+    Config.LocalTest.AutoHeal = value
+    setStatus(value and "Auto-Heal local ativado, sem confirmacao do servidor."
+        or "Auto-Heal local desativado.", Color3.fromRGB(255, 181, 91))
+end)
+buttonControl(playerPage, "RECUPERAR VIDA (LOCAL)", function()
+    setStatus(healLocal() and "Vida ajustada localmente; nao confirmada pelo servidor."
+        or "Personagem nao encontrado ou impossivel curar localmente.", Color3.fromRGB(255, 181, 91))
+end)
+toggle(playerPage, "Fome e sede automaticas (local)", function() return Config.LocalTest.Needs end, function(value)
+    Config.LocalTest.Needs = value
+    setStatus(value and "Fome e sede locais ativadas; sem efeito garantido no servidor."
+        or "Fome e sede locais desativadas.", Color3.fromRGB(255, 181, 91))
+end)
+buttonControl(playerPage, "ENCHER FOME (LOCAL)", function()
+    localFeedback("Fome", select(1, writeLocalStats("Hunger", 100)))
+end)
+buttonControl(playerPage, "ENCHER SEDE (LOCAL)", function()
+    localFeedback("Sede", select(1, writeLocalStats("Thirst", 100)))
+end)
+local localLevelField = textInput(playerPage, "Nivel local desejado", Config.LocalTest.DesiredLevel, function(value)
+    local n = tonumber(value)
+    if n then Config.LocalTest.DesiredLevel = math.clamp(math.floor(n), 1, 999) end
+end)
+toggle(playerPage, "Nivel local automatico", function() return Config.LocalTest.Level end, function(value)
+    Config.LocalTest.Level = value
+    setStatus(value and "Nivel local automatico ativado; progresso real exige servidor."
+        or "Nivel local automatico desativado.", Color3.fromRGB(255, 181, 91))
+end)
+buttonControl(playerPage, "APLICAR NIVEL LOCAL", function()
+    local n = tonumber(localLevelField.Text)
+    if not n then
+        setStatus("Nivel local invalido.", Color3.fromRGB(255, 181, 91))
+        return
+    end
+    Config.LocalTest.DesiredLevel = math.clamp(math.floor(n), 1, 999)
+    local matches = select(1, writeLocalStats("Level", Config.LocalTest.DesiredLevel))
+    localFeedback("Nivel", matches)
+end)
+
+-- Mantem a compatibilidade local fora de RenderStepped, com carga reduzida.
+task.spawn(function()
+    while active and gui.Parent do
+        local options = Config.LocalTest
+        if options.GodMode or options.AutoHeal then
+            local character = LocalPlayer.Character
+            local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+            if humanoid and humanoid.Health > 0 and humanoid.MaxHealth > 0 then
+                local belowThreshold = humanoid.Health / humanoid.MaxHealth * 100 < Config.Player.AutoHealThreshold
+                if options.GodMode or (options.AutoHeal and belowThreshold) then
+                    healLocal()
+                end
+            end
+        end
+        if options.Needs then
+            writeLocalStats("Hunger", 100)
+            writeLocalStats("Thirst", 100)
+        end
+        if options.Level then
+            writeLocalStats("Level", options.DesiredLevel)
+            -- A primeira rotina tambem ajustava XP, localmente.
+            writeLocalStats("XP", 9999999)
+        end
+        task.wait(0.6)
+    end
 end)
 
 -- Settings.
@@ -1196,4 +1337,4 @@ if resolveRemote() then
 else
     setStatus("HUD ativo. Vida, fome, sede e God Mode indisponiveis neste servidor.")
 end
-print("[ASTREND] Hub v2.3 carregado. Chams 3D sem bypass de anti-cheat.")
+print("[ASTREND] Hub v2.4 carregado. Testes locais nao alteram estado validado no servidor.")
