@@ -1,4 +1,4 @@
--- main.lua | Luau | Roblox client/executor | ASTREND HUB v2.1 (sem evasao de anti-cheat)
+-- main.lua | Luau | Roblox client/executor | ASTREND HUB v2.2 (sem evasao de anti-cheat)
 -- Logo: publique ASTREND-LOGO-UPLOAD.png no Roblox Creator Dashboard e informe o ImageId.
 -- Funcoes que alteram dados persistentes exigem o servidor ASTREND autorizado.
 
@@ -19,7 +19,7 @@ local Config = {
     Brand = {
         LogoImageId = 0, -- Substitua pelo ID da imagem publicada no Roblox.
         Title = "ASTREND HUB",
-        Subtitle = "CONTROL CENTER  /  v2.1",
+        Subtitle = "CONTROL CENTER  /  v2.2",
     },
     Theme = {
         RGB = false,
@@ -77,6 +77,8 @@ local accentBindings = setmetatable({}, {__mode = "k"})
 local refreshers = {}
 local statusText
 local serverRemote
+local responseConnection
+local pendingServer = {}
 local flyingHumanoid
 local aimHeld = false
 local lastESP = 0
@@ -150,12 +152,43 @@ local function refreshControls()
     end
 end
 
+-- Servidor controla alteracoes de estado. Um envio nao comprova sucesso.
+local function onServerResponse(action, success, message)
+    if not active then return end
+    local pending = pendingServer[action]
+    pendingServer[action] = nil
+    if success and pending then
+        if action == "GodMode" then
+            Config.Player.GodMode = pending.Value
+        elseif action == "AutoHeal" then
+            Config.Player.AutoHeal = pending.Value.Enabled
+        elseif action == "InfiniteAmmo" then
+            Config.Player.InfiniteAmmo = pending.Value
+        end
+        refreshControls()
+    end
+    if type(message) == "string" and #message > 0 then
+        setStatus(message, success and currentAccent() or Color3.fromRGB(255, 181, 91))
+    else
+        setStatus(success and "Operacao confirmada pelo servidor." or "Operacao recusada pelo servidor.",
+            success and currentAccent() or Color3.fromRGB(255, 181, 91))
+    end
+end
+
 local function resolveRemote()
     local candidate = ReplicatedStorage:FindFirstChild("AstrendHubAction")
-    if candidate and candidate:IsA("RemoteEvent") then
-        serverRemote = candidate
-    else
+    if not candidate or not candidate:IsA("RemoteEvent") then
         serverRemote = nil
+        if responseConnection then
+            responseConnection:Disconnect()
+            responseConnection = nil
+        end
+        return nil
+    end
+    if serverRemote ~= candidate or not responseConnection then
+        if responseConnection then responseConnection:Disconnect() end
+        serverRemote = candidate
+        responseConnection = connect(candidate.OnClientEvent, onServerResponse)
     end
     return serverRemote
 end
@@ -163,18 +196,32 @@ end
 local function serverAction(action, value)
     local remote = resolveRemote()
     if not remote then
-        setStatus("Servidor ASTREND indisponivel: recurso nao ativado.", Color3.fromRGB(255, 181, 91))
+        setStatus("Indisponivel neste jogo: o servidor nao possui ASTREND.", Color3.fromRGB(255, 181, 91))
         return false
     end
+    if pendingServer[action] then
+        setStatus("Aguardando resposta do servidor para " .. action .. ".", Color3.fromRGB(255, 181, 91))
+        return false
+    end
+    local request = {Value = value}
+    pendingServer[action] = request
     local ok, err = pcall(function()
         remote:FireServer(action, value)
     end)
     if not ok then
+        pendingServer[action] = nil
         warn("[ASTREND] Falha ao enviar comando: " .. tostring(err))
-        setStatus("Falha na solicitacao ao servidor.", Color3.fromRGB(255, 181, 91))
+        setStatus("Falha ao enviar comando ao servidor.", Color3.fromRGB(255, 181, 91))
         return false
     end
-    setStatus("Solicitacao enviada ao servidor (validacao pendente).")
+    setStatus("Pedido enviado; aguardando confirmacao...")
+    task.delay(3, function()
+        if active and pendingServer[action] == request then
+            pendingServer[action] = nil
+            setStatus("Servidor nao confirmou " .. action .. ". Nenhuma alteracao validada.",
+                Color3.fromRGB(255, 181, 91))
+        end
+    end)
     return true
 end
 
@@ -759,14 +806,12 @@ keybind(movement, "Tecla de Fly", function() return Config.Fly.Key end, function
 -- Funcoes do jogador: alteracoes reais sao executadas apenas por servidor proprio.
 local playerPage = tabPages.Player
 local healThresholdToken = 0
-section(playerPage, "Personagem", "Vida, municao e nivel requerem AstrendServer.server.lua no seu jogo.")
+section(playerPage, "Personagem", "Controles reais exigem servidor ASTREND instalado e autorizacao. Nao funcionam no Sintonia RP.")
 toggle(playerPage, "God Mode", function() return Config.Player.GodMode end, function(v)
-    if serverAction("GodMode", v) then Config.Player.GodMode = v end
+    serverAction("GodMode", v)
 end)
 toggle(playerPage, "Auto-Heal (vida baixa)", function() return Config.Player.AutoHeal end, function(v)
-    if serverAction("AutoHeal", {Enabled = v, Threshold = Config.Player.AutoHealThreshold}) then
-        Config.Player.AutoHeal = v
-    end
+    serverAction("AutoHeal", {Enabled = v, Threshold = Config.Player.AutoHealThreshold})
 end)
 slider(playerPage, "Ativar cura abaixo de", 10, 90,
     function() return Config.Player.AutoHealThreshold end,
@@ -783,12 +828,12 @@ slider(playerPage, "Ativar cura abaixo de", 10, 90,
         end
     end, true, "%")
 buttonControl(playerPage, "RECUPERAR VIDA AGORA", function() serverAction("HealNow") end)
-section(playerPage, "Necessidades", "Fome e sede: servidor proprio com atributos/valores configurados.")
+section(playerPage, "Necessidades", "Fome e sede precisam existir no servidor do jogo. Nao ha alteracao apenas pelo cliente.")
 buttonControl(playerPage, "ENCHER FOME", function() serverAction("FillHunger") end)
 buttonControl(playerPage, "ENCHER SEDE", function() serverAction("FillThirst") end)
 buttonControl(playerPage, "ENCHER FOME E SEDE", function() serverAction("FillNeeds") end)
 toggle(playerPage, "Municao infinita", function() return Config.Player.InfiniteAmmo end, function(v)
-    if serverAction("InfiniteAmmo", v) then Config.Player.InfiniteAmmo = v end
+    serverAction("InfiniteAmmo", v)
 end)
 local levelField = textInput(playerPage, "Nivel desejado", Config.Player.DesiredLevel, function(value)
     local amount = tonumber(value)
@@ -846,11 +891,8 @@ buttonControl(settings, "APLICAR LOGO", function()
 end)
 section(settings, "Conexao", "Somente jogos que instalaram o servidor ASTREND aceitam acoes de administracao.")
 buttonControl(settings, "VERIFICAR SERVIDOR", function()
-    if resolveRemote() then
-        setStatus("Canal localizado. A autorizacao sera verificada em cada pedido.", Config.Theme.Accent)
-    else
-        setStatus("Sem servidor ASTREND instalado.", Color3.fromRGB(255, 181, 91))
-    end
+    -- Confirma permissao real, nao apenas a existencia do RemoteEvent.
+    serverAction("Ping")
 end)
 
 -- Interacao da janela.
@@ -944,6 +986,53 @@ local function isTeammate(player)
     return player.Team ~= nil and LocalPlayer.Team ~= nil and player.Team == LocalPlayer.Team
 end
 
+local BODY_PARTS = {
+    Head = true, Torso = true, ["Left Arm"] = true, ["Right Arm"] = true,
+    ["Left Leg"] = true, ["Right Leg"] = true,
+    UpperTorso = true, LowerTorso = true,
+    LeftUpperArm = true, LeftLowerArm = true, LeftHand = true,
+    RightUpperArm = true, RightLowerArm = true, RightHand = true,
+    LeftUpperLeg = true, LeftLowerLeg = true, LeftFoot = true,
+    RightUpperLeg = true, RightLowerLeg = true, RightFoot = true,
+}
+
+local function projectCharacterBounds(camera, character)
+    local minX, minY = math.huge, math.huge
+    local maxX, maxY = -math.huge, -math.huge
+    local count = 0
+    local viewport = camera.ViewportSize
+    -- Somente corpo R6/R15. Acessorios, ferramentas e hitboxes sao ignorados.
+    for _, part in ipairs(character:GetChildren()) do
+        if part:IsA("BasePart") and BODY_PARTS[part.Name] then
+            local cf, half = part.CFrame, part.Size * 0.5
+            for ix = -1, 1, 2 do
+                for iy = -1, 1, 2 do
+                    for iz = -1, 1, 2 do
+                        local point = cf:PointToWorldSpace(Vector3.new(half.X * ix, half.Y * iy, half.Z * iz))
+                        local screen = camera:WorldToViewportPoint(point)
+                        if screen.Z <= 0.1 then return nil end
+                        minX = math.min(minX, screen.X)
+                        minY = math.min(minY, screen.Y)
+                        maxX = math.max(maxX, screen.X)
+                        maxY = math.max(maxY, screen.Y)
+                        count += 1
+                    end
+                end
+            end
+        end
+    end
+    if count == 0 or maxX < 0 or maxY < 0 or minX > viewport.X or minY > viewport.Y then
+        return nil
+    end
+    minX = math.max(0, minX - 1.5)
+    minY = math.max(0, minY - 1.5)
+    maxX = math.min(viewport.X, maxX + 1.5)
+    maxY = math.min(viewport.Y, maxY + 1.5)
+    local width, height = maxX - minX, maxY - minY
+    if width < 3 or height < 5 then return nil end
+    return minX, minY, width, height
+end
+
 local function renderESP(camera)
     if not Config.ESP.Enabled then
         for player in pairs(espCache) do hideESP(player) end
@@ -954,8 +1043,7 @@ local function renderESP(camera)
         local character = player.Character
         local humanoid = character and character:FindFirstChildOfClass("Humanoid")
         local root = character and character:FindFirstChild("HumanoidRootPart")
-        local head = character and character:FindFirstChild("Head")
-        if not humanoid or not root or not head or
+        if not humanoid or not root or
             (Config.ESP.HideDead and humanoid.Health <= 0) or
             (Config.ESP.TeamCheck and isTeammate(player)) then
             hideESP(player)
@@ -966,32 +1054,8 @@ local function renderESP(camera)
             hideESP(player)
             continue
         end
-        -- Caixa 2D calculada pelos oito cantos 3D do modelo do personagem.
-        local boundsCF, boundsSize = character:GetBoundingBox()
-        local half = boundsSize * 0.5
-        local minX, minY = math.huge, math.huge
-        local maxX, maxY = -math.huge, -math.huge
-        local pointsInFront = 0
-        for x = -1, 1, 2 do
-            for y = -1, 1, 2 do
-                for z = -1, 1, 2 do
-                    local world = boundsCF:PointToWorldSpace(Vector3.new(half.X * x, half.Y * y, half.Z * z))
-                    local screen = camera:WorldToViewportPoint(world)
-                    if screen.Z > 0.05 then
-                        pointsInFront += 1
-                        minX = math.min(minX, screen.X)
-                        minY = math.min(minY, screen.Y)
-                        maxX = math.max(maxX, screen.X)
-                        maxY = math.max(maxY, screen.Y)
-                    end
-                end
-            end
-        end
-        local viewport = camera.ViewportSize
-        local width, height = maxX - minX, maxY - minY
-        if pointsInFront < 8 or width < 3 or height < 5
-            or width > viewport.X * 1.6 or height > viewport.Y * 1.6
-            or maxX < 0 or minX > viewport.X or maxY < 0 or minY > viewport.Y then
+        local minX, minY, width, height = projectCharacterBounds(camera, character)
+        if not minX then
             hideESP(player)
             continue
         end
@@ -1078,14 +1142,10 @@ end
 sharedSession.AstrendHubCleanup = destroy
 connect(closeBtn.MouseButton1Click, destroy)
 connect(Players.PlayerRemoving, removeESP)
-local responseRemote = ReplicatedStorage:FindFirstChild("AstrendHubAction")
-if responseRemote and responseRemote:IsA("RemoteEvent") then
-    connect(responseRemote.OnClientEvent, function(action, success, message)
-        if type(message) == "string" then
-            setStatus(message, success and currentAccent() or Color3.fromRGB(255, 181, 91))
-        end
-    end)
-end
+-- Respostas vinculadas ao canal encontrado, inclusive se for criado posteriormente.
+connect(ReplicatedStorage.ChildAdded, function(item)
+    if item.Name == "AstrendHubAction" then resolveRemote() end
+end)
 connect(LocalPlayer.CharacterRemoving, function()
     if flyingHumanoid then
         flyingHumanoid.PlatformStand = false
@@ -1136,8 +1196,8 @@ end)
 
 applyAccent()
 if resolveRemote() then
-    setStatus("Canal ASTREND encontrado. Permissoes verificadas por pedido.", Config.Theme.Accent)
+    setStatus("Canal ASTREND encontrado. Verifique o acesso em Settings.", Config.Theme.Accent)
 else
-    setStatus("HUD pronto. Vida/municao/nivel exigem servidor ASTREND.")
+    setStatus("HUD ativo. Vida, fome, sede e God Mode indisponiveis neste servidor.")
 end
-print("[ASTREND] Hub v2.1 carregado. Sem bypass de anti-cheat.")
+print("[ASTREND] Hub v2.2 carregado. Sem bypass de anti-cheat.")
