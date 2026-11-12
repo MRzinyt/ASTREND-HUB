@@ -1,4 +1,4 @@
--- AstrendServer.server.lua | Luau | Roblox ServerScriptService | ASTREND HUB v2.1
+-- AstrendServer.server.lua | Luau | Roblox ServerScriptService | ASTREND HUB v2.2
 -- Instale somente numa experiencia Roblox que voce controla.
 -- Em experiencias pessoais, o proprio CreatorId e autorizado automaticamente.
 -- Em experiencias de grupo, adicione os UserIds dos administradores em EXTRA_ADMINS.
@@ -146,12 +146,17 @@ remote.OnServerEvent:Connect(function(player, action, value)
     if type(action) ~= "string" or #action > 32 then return end
 
     local now = os.clock()
-    if now - (rateLimit[player] or 0) < 0.1 then return end
+    if now - (rateLimit[player] or 0) < 0.1 then
+        reply(player, action, false, "Muitos comandos em sequencia. Tente novamente.")
+        return
+    end
     rateLimit[player] = now
 
     local config = ensureState(player)
     local ok, message = false, "Acao desconhecida ou parametros invalidos."
-    if action == "HealNow" then
+    if action == "Ping" then
+        ok, message = true, "Servidor ASTREND conectado; acesso de administrador confirmado."
+    elseif action == "HealNow" then
         ok = heal(player)
         message = ok and "Vida recuperada pelo servidor." or "Personagem sem vida ativa."
     elseif action == "GodMode" and type(value) == "boolean" then
