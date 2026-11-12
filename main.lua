@@ -1,4 +1,4 @@
--- main.lua | Luau | Roblox client/executor | ASTREND HUB v2.5 (otimizado, sem evasao de anti-cheat)
+-- main.lua | Luau | Roblox client/executor | ASTREND HUB v2.6 (ESP Box 3D, sem evasao de anti-cheat)
 -- Logo: publique ASTREND-LOGO-UPLOAD.png no Roblox Creator Dashboard e informe o ImageId.
 -- Funcoes que alteram dados persistentes exigem o servidor ASTREND autorizado.
 
@@ -19,7 +19,7 @@ local Config = {
     Brand = {
         LogoImageId = 0, -- Substitua pelo ID da imagem publicada no Roblox.
         Title = "ASTREND HUB",
-        Subtitle = "CONTROL CENTER  /  v2.5",
+        Subtitle = "CONTROL CENTER  /  v2.6",
     },
     Theme = {
         RGB = false,
@@ -48,7 +48,9 @@ local Config = {
     },
     ESP = {
         Enabled = false,
-        ShowChams = true,
+        ShowChams = false,
+        ShowBox = true,
+        BoxTransparency = 65, -- 0 = opaco, 100 = invisivel
         ShowName = true,
         ShowDistance = true,
         ThroughWalls = true,
@@ -246,7 +248,8 @@ if old then old:Destroy() end
 
 -- Remover objetos isolados por execucoes antigas interrompidas.
 for _, item in ipairs(Workspace:GetChildren()) do
-    if item:IsA("Highlight") and item.Name:match("^AstrendChams_%d+$") then
+    if (item:IsA("Highlight") and item.Name:match("^AstrendChams_%d+$"))
+        or (item:IsA("BoxHandleAdornment") and item.Name:match("^AstrendBox_%d+$")) then
         item:Destroy()
     end
 end
@@ -263,6 +266,7 @@ sharedSession.AstrendHubCleanup = function()
     for _, c in ipairs(connections) do pcall(function() c:Disconnect() end) end
     for _, data in pairs(espCache) do
         if data.Highlight then pcall(function() data.Highlight:Destroy() end) end
+        if data.Box then pcall(function() data.Box:Destroy() end) end
         if data.Billboard then pcall(function() data.Billboard:Destroy() end) end
     end
     if gui then pcall(function() gui:Destroy() end) end
@@ -809,10 +813,12 @@ toggle(combat, "Silent: ignorar equipe", function() return Config.Silent.TeamChe
 task.wait() -- Distribui a criacao da interface em mais de um frame.
 -- Visuals: modelo 3D em vez de caixas 2D calculadas pela CPU.
 local visuals = tabPages.Visuals
-section(visuals, "CHAMS ESP 3D", "O Sintonia RP detectou ESP (erro 267). Pode expulsar novamente.")
+section(visuals, "ESP BOX / CHAMS 3D", "Marcadores visuais locais; sem bypass do anti-cheat.")
 toggle(visuals, "Ativar ESP", function() return Config.ESP.Enabled end, function(v) Config.ESP.Enabled = v end)
+toggle(visuals, "Mostrar ESP Box 3D", function() return Config.ESP.ShowBox end, function(v) Config.ESP.ShowBox = v end)
+slider(visuals, "Transparencia do Box", 0, 100, function() return Config.ESP.BoxTransparency end, function(v) Config.ESP.BoxTransparency = v end, true, " %")
 toggle(visuals, "Mostrar Chams 3D", function() return Config.ESP.ShowChams end, function(v) Config.ESP.ShowChams = v end)
-toggle(visuals, "Ver atraves de paredes", function() return Config.ESP.ThroughWalls end, function(v) Config.ESP.ThroughWalls = v end)
+toggle(visuals, "Atravessar paredes (visual)", function() return Config.ESP.ThroughWalls end, function(v) Config.ESP.ThroughWalls = v end)
 slider(visuals, "Transparencia do Chams", 0, 100, function() return Config.ESP.FillTransparency end, function(v) Config.ESP.FillTransparency = v end, true, " %")
 toggle(visuals, "Mostrar nomes", function() return Config.ESP.ShowName end, function(v) Config.ESP.ShowName = v end)
 toggle(visuals, "Mostrar distancia", function() return Config.ESP.ShowDistance end, function(v) Config.ESP.ShowDistance = v end)
@@ -1144,6 +1150,7 @@ local function hideESP(player)
     local data = espCache[player]
     if not data then return end
     if data.Highlight and data.Highlight.Parent then data.Highlight.Enabled = false end
+    if data.Box and data.Box.Parent then data.Box.Visible = false end
     if data.Billboard and data.Billboard.Parent then data.Billboard.Enabled = false end
 end
 
@@ -1154,15 +1161,20 @@ local function removeESP(player)
         accentBindings[data.Highlight] = nil
         data.Highlight:Destroy()
     end
+    if data.Box then
+        accentBindings[data.Box] = nil
+        data.Box:Destroy()
+    end
     if data.DistanceLabel then accentBindings[data.DistanceLabel] = nil end
     if data.Billboard then data.Billboard:Destroy() end
     espCache[player] = nil
 end
 
-local function getESP(player, character, headOrRoot)
+local function getESP(player, character, headOrRoot, root, humanoid)
     local data = espCache[player]
     if data and data.Character == character and
         data.Highlight and data.Highlight.Parent and
+        data.Box and data.Box.Parent and data.Box.Adornee == root and
         data.Billboard and data.Billboard.Parent then
         if data.Billboard.Adornee ~= headOrRoot then
             data.Billboard.Adornee = headOrRoot
@@ -1182,7 +1194,20 @@ local function getESP(player, character, headOrRoot)
         OutlineTransparency = 0,
     })
     accent(hl, "FillColor")
-    -- Outline segue o mesmo destaque (RGB/verde)
+    -- Box nativo 3D: sem projecao 2D, sem Drawing e sem contornar sistemas do jogo.
+    local boxSize = humanoid.RigType == Enum.HumanoidRigType.R6
+        and Vector3.new(3.5, 5.5, 2.5) or Vector3.new(3.5, 6.0, 2.5)
+    local box = new("BoxHandleAdornment", {
+        Name = "AstrendBox_" .. tostring(player.UserId),
+        Adornee = root,
+        Size = boxSize,
+        AlwaysOnTop = Config.ESP.ThroughWalls,
+        Color3 = Config.Theme.Accent,
+        Transparency = Config.ESP.BoxTransparency / 100,
+        ZIndex = 4,
+        Visible = false,
+    })
+    accent(box, "Color3")
     local billboard = new("BillboardGui", {
         Name = "AstrendTag_" .. tostring(player.UserId),
         Adornee = headOrRoot,
@@ -1216,6 +1241,7 @@ local function getESP(player, character, headOrRoot)
     data = {
         Character = character,
         Highlight = hl,
+        Box = box,
         Billboard = billboard,
         NameLabel = nameLabel,
         DistanceLabel = distanceLabel,
@@ -1223,6 +1249,7 @@ local function getESP(player, character, headOrRoot)
     -- Tornar os elementos visiveis somente depois que tudo estiver pronto.
     billboard.Parent = PlayerGui
     hl.Parent = Workspace
+    box.Parent = Workspace
     espCache[player] = data
     return data
 end
@@ -1266,8 +1293,13 @@ local function renderESP(camera)
             createdThisCycle += 1
         end
         local head = character:FindFirstChild("Head")
-        local data = getESP(player, character, head or root)
+        local data = getESP(player, character, head or root, root, humanoid)
         activeHighlights += 1
+        local box = data.Box
+        box.Visible = Config.ESP.ShowBox
+        box.Color3 = color
+        box.Transparency = Config.ESP.BoxTransparency / 100
+        box.AlwaysOnTop = Config.ESP.ThroughWalls
         local highlight = data.Highlight
         highlight.Enabled = Config.ESP.ShowChams
         highlight.DepthMode = Config.ESP.ThroughWalls
@@ -1451,4 +1483,4 @@ if resolveRemote() then
 else
     setStatus("HUD ativo. Vida, fome, sede e God Mode indisponiveis neste servidor.")
 end
-print("[ASTREND] Hub v2.5 iniciado. ESP limitado e varreduras otimizadas.")
+print("[ASTREND] Hub v2.6 iniciado. Box 3D disponivel; nenhum bypass implementado.")
