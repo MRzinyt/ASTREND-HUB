@@ -1,4 +1,4 @@
--- main.lua | Luau | Roblox client/executor | ASTREND HUB v2.4 (sem evasao de anti-cheat)
+-- main.lua | Luau | Roblox client/executor | ASTREND HUB v2.5 (otimizado, sem evasao de anti-cheat)
 -- Logo: publique ASTREND-LOGO-UPLOAD.png no Roblox Creator Dashboard e informe o ImageId.
 -- Funcoes que alteram dados persistentes exigem o servidor ASTREND autorizado.
 
@@ -19,7 +19,7 @@ local Config = {
     Brand = {
         LogoImageId = 0, -- Substitua pelo ID da imagem publicada no Roblox.
         Title = "ASTREND HUB",
-        Subtitle = "CONTROL CENTER  /  v2.4",
+        Subtitle = "CONTROL CENTER  /  v2.5",
     },
     Theme = {
         RGB = false,
@@ -55,8 +55,10 @@ local Config = {
         FillTransparency = 65, -- 0 = opaco; 100 = invisivel
         TeamCheck = true,
         HideDead = true,
-        MaxDistance = 800, -- studs
-        UpdateRate = 4, -- atualizacoes de filtro/texto por segundo
+        MaxDistance = 600, -- studs
+        UpdateRate = 2, -- fora de RenderStepped
+        MaxHighlights = 10, -- teto para nao sobrecarregar GPU/CPU
+        NewPerCycle = 2, -- distribuir criacao de objetos em ciclos
     },
     Fly = {
         Enabled = false,
@@ -90,7 +92,6 @@ local responseConnection
 local pendingServer = {}
 local flyingHumanoid
 local aimHeld = false
-local lastESP = 0
 local lastTheme = 0
 
 local function connect(signal, fn)
@@ -157,7 +158,8 @@ end
 
 local function refreshControls()
     for _, refresh in ipairs(refreshers) do
-        refresh()
+        local ok, err = pcall(refresh)
+        if not ok then warn("[ASTREND] Controle: " .. tostring(err)) end
     end
 end
 
@@ -242,7 +244,31 @@ end
 local old = PlayerGui:FindFirstChild("AstrendHubV2")
 if old then old:Destroy() end
 
-local gui = new("ScreenGui", {
+-- Remover objetos isolados por execucoes antigas interrompidas.
+for _, item in ipairs(Workspace:GetChildren()) do
+    if item:IsA("Highlight") and item.Name:match("^AstrendChams_%d+$") then
+        item:Destroy()
+    end
+end
+for _, item in ipairs(PlayerGui:GetChildren()) do
+    if item:IsA("BillboardGui") and item.Name:match("^AstrendTag_%d+$") then
+        item:Destroy()
+    end
+end
+
+local gui
+-- Limpeza de emergencia registrada antes de criar o restante da interface.
+sharedSession.AstrendHubCleanup = function()
+    active = false
+    for _, c in ipairs(connections) do pcall(function() c:Disconnect() end) end
+    for _, data in pairs(espCache) do
+        if data.Highlight then pcall(function() data.Highlight:Destroy() end) end
+        if data.Billboard then pcall(function() data.Billboard:Destroy() end) end
+    end
+    if gui then pcall(function() gui:Destroy() end) end
+end
+
+gui = new("ScreenGui", {
     Name = "AstrendHubV2",
     ResetOnSpawn = false,
     IgnoreGuiInset = true,
@@ -487,7 +513,7 @@ end
 selectTab("Combat")
 
 statusText = new("TextLabel", {
-    Text = "ASTREND v2.1  |  Inicializado",
+    Text = "ASTREND v2.5  |  Modo leve",
     Position = UDim2.new(0, 10, 1, -58),
     Size = UDim2.new(1, -20, 0, 55),
     BackgroundTransparency = 1,
@@ -780,6 +806,7 @@ slider(combat, "Alcance Silent", 50, 1500, function() return Config.Silent.MaxDi
 toggle(combat, "Silent: ignorar equipe", function() return Config.Silent.TeamCheck end,
     function(v) Config.Silent.TeamCheck = v end)
 
+task.wait() -- Distribui a criacao da interface em mais de um frame.
 -- Visuals: modelo 3D em vez de caixas 2D calculadas pela CPU.
 local visuals = tabPages.Visuals
 section(visuals, "CHAMS ESP 3D", "O Sintonia RP detectou ESP (erro 267). Pode expulsar novamente.")
@@ -794,6 +821,7 @@ toggle(visuals, "Ocultar jogadores mortos", function() return Config.ESP.HideDea
 slider(visuals, "Distancia do ESP", 100, 2000, function() return Config.ESP.MaxDistance end, function(v) Config.ESP.MaxDistance = v end, true, " studs")
 slider(visuals, "Atualizacoes por segundo", 1, 12, function() return Config.ESP.UpdateRate end, function(v) Config.ESP.UpdateRate = v end, true, " Hz")
 
+task.wait()
 -- Movement.
 local movement = tabPages.Movement
 section(movement, "Movimentacao", "Movimento local sujeito a validacao do servidor.")
@@ -814,6 +842,7 @@ toggle(movement, "Ativar Fly", function() return Config.Fly.Enabled end, setFly)
 slider(movement, "Velocidade do Fly", 5, 100, function() return Config.Fly.Speed end, function(v) Config.Fly.Speed = v end, true)
 keybind(movement, "Tecla de Fly", function() return Config.Fly.Key end, function(v) Config.Fly.Key = v end)
 
+task.wait()
 -- Funcoes do jogador: alteracoes reais sao executadas apenas por servidor proprio.
 local playerPage = tabPages.Player
 local healThresholdToken = 0
@@ -862,46 +891,83 @@ end)
 
 -- Compatibilidade com a PRIMEIRA rotina enviada: alteracao somente dos valores locais.
 -- Em servidor de terceiros, nenhuma mudanca e garantida ou persistente.
-local function matchesStat(name, kind)
+-- Cache de valores locais: evita GetDescendants em todo o PlayerGui.
+-- Apenas containers de dados conhecidos; varredura no maximo a cada 8 segundos.
+local STAT_KIND = {
+    fome = "Hunger", comida = "Hunger", hunger = "Hunger", food = "Hunger",
+    sede = "Thirst", agua = "Thirst", ["água"] = "Thirst", thirst = "Thirst", water = "Thirst",
+    nivel = "Level", ["nível"] = "Level", level = "Level", lvl = "Level",
+    xp = "XP", exp = "XP", experience = "XP", experiencia = "XP", ["experiência"] = "XP",
+}
+local localStatCache = {Hunger = {}, Thirst = {}, Level = {}, XP = {}}
+local lastStatScan = -math.huge
+local lastStatCharacter
+
+local function statKind(name)
     local normalized = string.lower(tostring(name)):gsub("[%s_%-]", "")
-    local patterns = {
-        Hunger = {"fome", "comida", "hunger", "food"},
-        Thirst = {"sede", "agua", "água", "thirst", "water"},
-        Level = {"nivel", "nível", "level", "lvl"},
-        XP = {"xp", "exp", "experience", "experiencia", "experiência"},
-    }
-    for _, candidate in ipairs(patterns[kind] or {}) do
-        if normalized == candidate then return true end
-    end
-    return false
+    return STAT_KIND[normalized]
 end
 
-local function writeLocalStats(kind, value)
-    local found, changed = 0, 0
-    -- Values dentro do Player (inclusive leaderstats), como no codigo original.
-    for _, item in ipairs(LocalPlayer:GetDescendants()) do
-        if (item:IsA("IntValue") or item:IsA("NumberValue")) and matchesStat(item.Name, kind) then
-            found += 1
-            local ok = pcall(function()
-                if item.Value ~= value then item.Value = value end
-            end)
-            if ok then changed += 1 end
+local function refreshLocalStatCache(force)
+    local character = LocalPlayer.Character
+    if not force and character == lastStatCharacter and os.clock() - lastStatScan < 8 then return end
+    lastStatScan = os.clock()
+    lastStatCharacter = character
+    for _, entries in pairs(localStatCache) do table.clear(entries) end
+    local roots = {
+        LocalPlayer, character,
+        LocalPlayer:FindFirstChild("leaderstats"),
+        LocalPlayer:FindFirstChild("Data"),
+        LocalPlayer:FindFirstChild("PlayerData"),
+        LocalPlayer:FindFirstChild("Stats"),
+        LocalPlayer:FindFirstChild("Status"),
+    }
+    local scanned = {}
+    local function track(item)
+        if (item:IsA("IntValue") or item:IsA("NumberValue")) then
+            local kind = statKind(item.Name)
+            if kind then table.insert(localStatCache[kind], {ValueObject = item}) end
         end
     end
-    -- Alguns sistemas locais usam Attributes em vez de NumberValues.
-    local containers = {LocalPlayer, LocalPlayer.Character}
-    for _, container in ipairs(containers) do
-        if container then
-            for name, current in pairs(container:GetAttributes()) do
-                if type(current) == "number" and matchesStat(name, kind) then
-                    found += 1
-                    local ok = pcall(function() container:SetAttribute(name, value) end)
-                    if ok then changed += 1 end
+    for _, root in ipairs(roots) do
+        if root and not scanned[root] then
+            scanned[root] = true
+            for _, item in ipairs(root:GetChildren()) do
+                track(item)
+                -- Nao escanear PlayerGui, PlayerScripts, Backpack nem todo o avatar.
+                if root ~= LocalPlayer and root ~= character and
+                    (item:IsA("Folder") or item:IsA("Configuration")) then
+                    for _, child in ipairs(item:GetDescendants()) do track(child) end
+                end
+            end
+            for name, value in pairs(root:GetAttributes()) do
+                if type(value) == "number" then
+                    local kind = statKind(name)
+                    if kind then table.insert(localStatCache[kind], {Container = root, Attribute = name}) end
                 end
             end
         end
     end
-    return found, changed
+end
+
+local function writeLocalStats(kind, value)
+    refreshLocalStatCache(false)
+    local found = 0
+    for _, entry in ipairs(localStatCache[kind] or {}) do
+        local item = entry.ValueObject
+        local container = entry.Container
+        if item and item.Parent then
+            found += 1
+            if item.Value ~= value then pcall(function() item.Value = value end) end
+        elseif container and container.Parent then
+            found += 1
+            if container:GetAttribute(entry.Attribute) ~= value then
+                pcall(function() container:SetAttribute(entry.Attribute, value) end)
+            end
+        end
+    end
+    if found == 0 then lastStatScan = -math.huge end
+    return found, found
 end
 
 local function healLocal()
@@ -990,10 +1056,11 @@ task.spawn(function()
             -- A primeira rotina tambem ajustava XP, localmente.
             writeLocalStats("XP", 9999999)
         end
-        task.wait(0.6)
+        task.wait(2.5) -- controle local de baixa frequencia
     end
 end)
 
+task.wait()
 -- Settings.
 local settings = tabPages.Settings
 section(settings, "Identidade Visual", "Verde ASTREND ou RGB automatico em todos os detalhes.")
@@ -1170,6 +1237,8 @@ local function renderESP(camera)
     local cameraPosition = camera.CFrame.Position
     local color = currentAccent()
     local maxDistance = Config.ESP.MaxDistance
+    local activeHighlights = 0
+    local createdThisCycle = 0
     for _, player in ipairs(Players:GetPlayers()) do
         if player == LocalPlayer then continue end
         local character = player.Character
@@ -1178,17 +1247,25 @@ local function renderESP(camera)
         if not humanoid or not root or
             (Config.ESP.HideDead and humanoid.Health <= 0) or
             (Config.ESP.TeamCheck and isTeammate(player)) then
-            hideESP(player)
+            removeESP(player)
             continue
         end
         local distance = (cameraPosition - root.Position).Magnitude
-        if distance > maxDistance then
-            hideESP(player)
+        if distance > maxDistance or activeHighlights >= Config.ESP.MaxHighlights then
+            removeESP(player)
             continue
         end
-
+        local cached = espCache[player]
+        if (not cached or cached.Character ~= character) then
+            if createdThisCycle >= Config.ESP.NewPerCycle then
+                removeESP(player)
+                continue
+            end
+            createdThisCycle += 1
+        end
         local head = character:FindFirstChild("Head")
         local data = getESP(player, character, head or root)
+        activeHighlights += 1
         local highlight = data.Highlight
         highlight.Enabled = Config.ESP.ShowChams
         highlight.DepthMode = Config.ESP.ThroughWalls
@@ -1202,8 +1279,11 @@ local function renderESP(camera)
         data.Billboard.MaxDistance = maxDistance
         data.NameLabel.Visible = Config.ESP.ShowName
         data.DistanceLabel.Visible = Config.ESP.ShowDistance
-        data.NameLabel.Text = player.DisplayName
-        data.DistanceLabel.Text = string.format("~%.0f m", distance * 0.28)
+        if data.NameLabel.Text ~= player.DisplayName then
+            data.NameLabel.Text = player.DisplayName
+        end
+        local label = string.format("~%.0f m", distance * 0.28)
+        if data.DistanceLabel.Text ~= label then data.DistanceLabel.Text = label end
     end
 end
 
@@ -1301,14 +1381,30 @@ end)
 connect(UIS.InputEnded, function(input)
     if input.KeyCode == Config.Aim.Key then aimHeld = false end
 end)
+local lastAimFOV, lastSilentFOV
 connect(RunService.RenderStepped, function(deltaTime)
     if not active or not gui.Parent then return end
+    if not (Config.Aim.Enabled or Config.Silent.Enabled or Config.Fly.Enabled or Config.Theme.RGB) then
+        if fovCircle.Visible then fovCircle.Visible = false end
+        if silentCircle.Visible then silentCircle.Visible = false end
+        return
+    end
     local camera = Workspace.CurrentCamera
     if not camera then return end
-    fovCircle.Visible = Config.Aim.Enabled and Config.Aim.ShowFOV
-    fovCircle.Size = UDim2.fromOffset(Config.Aim.FOV * 2, Config.Aim.FOV * 2)
-    silentCircle.Visible = Config.Silent.Enabled and Config.Silent.ShowFOV
-    silentCircle.Size = UDim2.fromOffset(Config.Silent.FOV * 2, Config.Silent.FOV * 2)
+
+    local showAim = Config.Aim.Enabled and Config.Aim.ShowFOV
+    if fovCircle.Visible ~= showAim then fovCircle.Visible = showAim end
+    if showAim and lastAimFOV ~= Config.Aim.FOV then
+        lastAimFOV = Config.Aim.FOV
+        fovCircle.Size = UDim2.fromOffset(lastAimFOV * 2, lastAimFOV * 2)
+    end
+    local showSilent = Config.Silent.Enabled and Config.Silent.ShowFOV
+    if silentCircle.Visible ~= showSilent then silentCircle.Visible = showSilent end
+    if showSilent and lastSilentFOV ~= Config.Silent.FOV then
+        lastSilentFOV = Config.Silent.FOV
+        silentCircle.Size = UDim2.fromOffset(lastSilentFOV * 2, lastSilentFOV * 2)
+    end
+
     if Config.Aim.Enabled and aimHeld then
         local target = selectTarget(camera)
         if target then
@@ -1318,18 +1414,34 @@ connect(RunService.RenderStepped, function(deltaTime)
         end
     end
     if Config.Fly.Enabled then renderFly(camera) end
-    local now = os.clock()
-    if now - lastESP >= 1 / Config.ESP.UpdateRate then
-        lastESP = now
-        renderESP(camera)
-    end
-    -- GUI em RGB nao precisa reprocessar todos os controles a 20 Hz.
-    if Config.Theme.RGB and now - lastTheme >= 0.1 then
-        lastTheme = now
+
+    if Config.Theme.RGB and os.clock() - lastTheme >= 0.25 then
+        lastTheme = os.clock()
         applyAccent()
         refreshControls()
     end
 end)
+
+-- ESP fora do RenderStepped. Falhas desativam o recurso e removem objetos.
+task.spawn(function()
+    while active and gui.Parent do
+        if Config.ESP.Enabled or next(espCache) then
+            local camera = Workspace.CurrentCamera
+            if camera then
+                local ok, err = pcall(renderESP, camera)
+                if not ok then
+                    Config.ESP.Enabled = false
+                    for player in pairs(espCache) do removeESP(player) end
+                    refreshControls()
+                    warn("[ASTREND] ESP desativado: " .. tostring(err))
+                    setStatus("ESP interrompido por erro. Veja o console.", Color3.fromRGB(255, 181, 91))
+                end
+            end
+        end
+        task.wait(math.max(0.5, 1 / math.max(Config.ESP.UpdateRate, 1)))
+    end
+end)
+
 
 applyAccent()
 if resolveRemote() then
@@ -1337,4 +1449,4 @@ if resolveRemote() then
 else
     setStatus("HUD ativo. Vida, fome, sede e God Mode indisponiveis neste servidor.")
 end
-print("[ASTREND] Hub v2.4 carregado. Testes locais nao alteram estado validado no servidor.")
+print("[ASTREND] Hub v2.5 iniciado. ESP limitado e varreduras otimizadas.")
