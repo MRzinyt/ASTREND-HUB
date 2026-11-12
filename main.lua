@@ -1,4 +1,4 @@
--- main.lua | Luau | Roblox client/executor | ASTREND HUB v2.0 (sem evasao de anti-cheat)
+-- main.lua | Luau | Roblox client/executor | ASTREND HUB v2.1 (sem evasao de anti-cheat)
 -- Logo: publique ASTREND-LOGO-UPLOAD.png no Roblox Creator Dashboard e informe o ImageId.
 -- Funcoes que alteram dados persistentes exigem o servidor ASTREND autorizado.
 
@@ -19,7 +19,7 @@ local Config = {
     Brand = {
         LogoImageId = 0, -- Substitua pelo ID da imagem publicada no Roblox.
         Title = "ASTREND HUB",
-        Subtitle = "CONTROL CENTER  /  v2.0",
+        Subtitle = "CONTROL CENTER  /  v2.1",
     },
     Theme = {
         RGB = false,
@@ -37,6 +37,14 @@ local Config = {
         WallCheck = true,
         Prediction = 0.0,
         ShowFOV = true,
+    },
+    Silent = {
+        Enabled = false,
+        FOV = 90,
+        ShowFOV = true,
+        MaxDistance = 500,
+        TeamCheck = true,
+        -- Preview independente; acertos reais exigem integracao com a arma do jogo.
     },
     ESP = {
         Enabled = false,
@@ -206,6 +214,18 @@ local fovCorner = fovCircle:FindFirstChildOfClass("UICorner")
 fovCorner.CornerRadius = UDim.new(1, 0)
 accent(stroke(fovCircle, Config.Theme.Accent, 1.5, 0.12), "Color")
 
+local silentCircle = round(new("Frame", {
+    Name = "SilentFOV",
+    AnchorPoint = Vector2.new(0.5, 0.5),
+    Position = UDim2.fromScale(0.5, 0.5),
+    Size = UDim2.fromOffset(Config.Silent.FOV * 2, Config.Silent.FOV * 2),
+    BackgroundTransparency = 1,
+    Visible = false,
+    ZIndex = 3,
+}, overlay), 9999)
+silentCircle:FindFirstChildOfClass("UICorner").CornerRadius = UDim.new(1, 0)
+stroke(silentCircle, Color3.fromRGB(75, 193, 255), 1.4, 0.15)
+
 local main = round(new("Frame", {
     Name = "Main",
     AnchorPoint = Vector2.new(0.5, 0.5),
@@ -300,7 +320,9 @@ local function headerButton(symbol, rightOffset)
         ZIndex = 12,
     }, header), 7)
 end
-local minimizeBtn = headerButton("-", -73)
+local minimizeBtn = headerButton("MIN", -101)
+minimizeBtn.Size = UDim2.fromOffset(59, 28)
+minimizeBtn.TextSize = 11
 local closeBtn = headerButton("X", -39)
 
 local body = new("Frame", {
@@ -409,7 +431,7 @@ end
 selectTab("Combat")
 
 statusText = new("TextLabel", {
-    Text = "ASTREND v2.0  |  Inicializado",
+    Text = "ASTREND v2.1  |  Inicializado",
     Position = UDim2.new(0, 10, 1, -58),
     Size = UDim2.new(1, -20, 0, 55),
     BackgroundTransparency = 1,
@@ -690,6 +712,18 @@ toggle(combat, "Ignorar mesma equipe", function() return Config.Aim.TeamCheck en
 toggle(combat, "Checar obstrucao", function() return Config.Aim.WallCheck end, function(v) Config.Aim.WallCheck = v end)
 keybind(combat, "Tecla de mira", function() return Config.Aim.Key end, function(v) Config.Aim.Key = v end)
 
+section(combat, "Silent (FOV separado)", "Previa visual independente. A alteracao de acertos requer integracao com seu jogo.")
+toggle(combat, "Habilitar preview Silent", function() return Config.Silent.Enabled end,
+    function(v) Config.Silent.Enabled = v end)
+toggle(combat, "Mostrar FOV Silent", function() return Config.Silent.ShowFOV end,
+    function(v) Config.Silent.ShowFOV = v end)
+slider(combat, "FOV Silent", 20, 400, function() return Config.Silent.FOV end,
+    function(v) Config.Silent.FOV = v end, true, "px")
+slider(combat, "Alcance Silent", 50, 1500, function() return Config.Silent.MaxDistance end,
+    function(v) Config.Silent.MaxDistance = v end, true, " studs")
+toggle(combat, "Silent: ignorar equipe", function() return Config.Silent.TeamCheck end,
+    function(v) Config.Silent.TeamCheck = v end)
+
 -- Visuals: HUD de posicoes que o cliente ja recebeu do servidor.
 local visuals = tabPages.Visuals
 section(visuals, "ESP 2D", "Caixas e indicadores no HUD; nao ha bypass do anti-cheat.")
@@ -749,6 +783,10 @@ slider(playerPage, "Ativar cura abaixo de", 10, 90,
         end
     end, true, "%")
 buttonControl(playerPage, "RECUPERAR VIDA AGORA", function() serverAction("HealNow") end)
+section(playerPage, "Necessidades", "Fome e sede: servidor proprio com atributos/valores configurados.")
+buttonControl(playerPage, "ENCHER FOME", function() serverAction("FillHunger") end)
+buttonControl(playerPage, "ENCHER SEDE", function() serverAction("FillThirst") end)
+buttonControl(playerPage, "ENCHER FOME E SEDE", function() serverAction("FillNeeds") end)
 toggle(playerPage, "Municao infinita", function() return Config.Player.InfiniteAmmo end, function(v)
     if serverAction("InfiniteAmmo", v) then Config.Player.InfiniteAmmo = v end
 end)
@@ -783,10 +821,33 @@ buttonControl(settings, "RESTAURAR VERDE ASTREND", function()
     applyAccent()
     refreshControls()
 end)
+section(settings, "Logo", "No Roblox, publique sua PNG como Imagem e informe o Asset ID abaixo.")
+local logoField = textInput(settings, "ID da logo ASTREND (Asset ID)", Config.Brand.LogoImageId, function(value)
+    local id = tonumber(value)
+    if id and id > 0 then
+        Config.Brand.LogoImageId = math.floor(id)
+        logoImage.Image = "rbxassetid://" .. tostring(Config.Brand.LogoImageId)
+        fallbackLogo.Visible = false
+        setStatus("Logo configurada. Confira se o asset e publico/aprovado.", currentAccent())
+    else
+        setStatus("Asset ID invalido. Envie um numero positivo.", Color3.fromRGB(255, 181, 91))
+    end
+end)
+buttonControl(settings, "APLICAR LOGO", function()
+    local id = tonumber(logoField.Text)
+    if not id or id <= 0 then
+        setStatus("Asset ID invalido.", Color3.fromRGB(255, 181, 91))
+        return
+    end
+    Config.Brand.LogoImageId = math.floor(id)
+    logoImage.Image = "rbxassetid://" .. tostring(Config.Brand.LogoImageId)
+    fallbackLogo.Visible = false
+    setStatus("Logo solicitada ao Roblox. Se nao aparecer, verifique a permissao do asset.")
+end)
 section(settings, "Conexao", "Somente jogos que instalaram o servidor ASTREND aceitam acoes de administracao.")
 buttonControl(settings, "VERIFICAR SERVIDOR", function()
     if resolveRemote() then
-        setStatus("Canal ASTREND localizado; permissoes validadas pelo servidor.", Config.Theme.Accent)
+        setStatus("Canal localizado. A autorizacao sera verificada em cada pedido.", Config.Theme.Accent)
     else
         setStatus("Sem servidor ASTREND instalado.", Color3.fromRGB(255, 181, 91))
     end
@@ -821,7 +882,7 @@ connect(minimizeBtn.MouseButton1Click, function()
     minimized = not minimized
     body.Visible = not minimized
     main.Size = minimized and UDim2.fromOffset(650, 64) or UDim2.fromOffset(650, 440)
-    minimizeBtn.Text = minimized and "+" or "-"
+    minimizeBtn.Text = minimized and "ABRIR" or "MIN"
 end)
 
 local function hideESP(player)
@@ -905,24 +966,44 @@ local function renderESP(camera)
             hideESP(player)
             continue
         end
-        local top, topVisible = camera:WorldToViewportPoint(head.Position + Vector3.new(0, 0.8, 0))
-        local bottom, bottomVisible = camera:WorldToViewportPoint(root.Position - Vector3.new(0, 3.3, 0))
-        if not (topVisible and bottomVisible) or top.Z <= 0 or bottom.Z <= 0 then
+        -- Caixa 2D calculada pelos oito cantos 3D do modelo do personagem.
+        local boundsCF, boundsSize = character:GetBoundingBox()
+        local half = boundsSize * 0.5
+        local minX, minY = math.huge, math.huge
+        local maxX, maxY = -math.huge, -math.huge
+        local pointsInFront = 0
+        for x = -1, 1, 2 do
+            for y = -1, 1, 2 do
+                for z = -1, 1, 2 do
+                    local world = boundsCF:PointToWorldSpace(Vector3.new(half.X * x, half.Y * y, half.Z * z))
+                    local screen = camera:WorldToViewportPoint(world)
+                    if screen.Z > 0.05 then
+                        pointsInFront += 1
+                        minX = math.min(minX, screen.X)
+                        minY = math.min(minY, screen.Y)
+                        maxX = math.max(maxX, screen.X)
+                        maxY = math.max(maxY, screen.Y)
+                    end
+                end
+            end
+        end
+        local viewport = camera.ViewportSize
+        local width, height = maxX - minX, maxY - minY
+        if pointsInFront < 8 or width < 3 or height < 5
+            or width > viewport.X * 1.6 or height > viewport.Y * 1.6
+            or maxX < 0 or minX > viewport.X or maxY < 0 or minY > viewport.Y then
             hideESP(player)
             continue
         end
-        local height = math.abs(bottom.Y - top.Y)
-        local width = height * 0.47
-        if height < 5 then hideESP(player); continue end
         local data = getESP(player)
-        data.Root.Position = UDim2.fromOffset(top.X - width / 2, top.Y)
+        data.Root.Position = UDim2.fromOffset(minX, minY)
         data.Root.Size = UDim2.fromOffset(width, height)
         data.Root.Visible = true
         data.Border.Enabled = Config.ESP.ShowBox
         data.NameLabel.Visible = Config.ESP.ShowName
         data.NameLabel.Text = player.DisplayName
         data.DistanceLabel.Visible = Config.ESP.ShowDistance
-        data.DistanceLabel.Text = string.format("%.0f m", dist * 0.28)
+        data.DistanceLabel.Text = string.format("~%.0f m", dist * 0.28)
     end
 end
 
@@ -997,6 +1078,14 @@ end
 sharedSession.AstrendHubCleanup = destroy
 connect(closeBtn.MouseButton1Click, destroy)
 connect(Players.PlayerRemoving, removeESP)
+local responseRemote = ReplicatedStorage:FindFirstChild("AstrendHubAction")
+if responseRemote and responseRemote:IsA("RemoteEvent") then
+    connect(responseRemote.OnClientEvent, function(action, success, message)
+        if type(message) == "string" then
+            setStatus(message, success and currentAccent() or Color3.fromRGB(255, 181, 91))
+        end
+    end)
+end
 connect(LocalPlayer.CharacterRemoving, function()
     if flyingHumanoid then
         flyingHumanoid.PlatformStand = false
@@ -1022,6 +1111,8 @@ connect(RunService.RenderStepped, function(deltaTime)
     if not camera then return end
     fovCircle.Visible = Config.Aim.Enabled and Config.Aim.ShowFOV
     fovCircle.Size = UDim2.fromOffset(Config.Aim.FOV * 2, Config.Aim.FOV * 2)
+    silentCircle.Visible = Config.Silent.Enabled and Config.Silent.ShowFOV
+    silentCircle.Size = UDim2.fromOffset(Config.Silent.FOV * 2, Config.Silent.FOV * 2)
     if Config.Aim.Enabled and aimHeld then
         local target = selectTarget(camera)
         if target then
@@ -1045,8 +1136,8 @@ end)
 
 applyAccent()
 if resolveRemote() then
-    setStatus("Canal ASTREND encontrado. Servidor valida permissoes.", Config.Theme.Accent)
+    setStatus("Canal ASTREND encontrado. Permissoes verificadas por pedido.", Config.Theme.Accent)
 else
     setStatus("HUD pronto. Vida/municao/nivel exigem servidor ASTREND.")
 end
-print("[ASTREND] Hub v2.0 carregado. Sem bypass de anti-cheat.")
+print("[ASTREND] Hub v2.1 carregado. Sem bypass de anti-cheat.")
