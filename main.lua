@@ -1,4 +1,4 @@
--- main.lua | Luau | Roblox client/executor | ASTREND HUB v2.2 (sem evasao de anti-cheat)
+-- main.lua | Luau | Roblox client/executor | ASTREND HUB v2.3 (sem evasao de anti-cheat)
 -- Logo: publique ASTREND-LOGO-UPLOAD.png no Roblox Creator Dashboard e informe o ImageId.
 -- Funcoes que alteram dados persistentes exigem o servidor ASTREND autorizado.
 
@@ -19,7 +19,7 @@ local Config = {
     Brand = {
         LogoImageId = 0, -- Substitua pelo ID da imagem publicada no Roblox.
         Title = "ASTREND HUB",
-        Subtitle = "CONTROL CENTER  /  v2.2",
+        Subtitle = "CONTROL CENTER  /  v2.3",
     },
     Theme = {
         RGB = false,
@@ -48,13 +48,15 @@ local Config = {
     },
     ESP = {
         Enabled = false,
-        ShowBox = true,
+        ShowChams = true,
         ShowName = true,
         ShowDistance = true,
+        ThroughWalls = true,
+        FillTransparency = 65, -- 0 = opaco; 100 = invisivel
         TeamCheck = true,
         HideDead = true,
-        MaxDistance = 800,
-        UpdateRate = 20,
+        MaxDistance = 800, -- studs
+        UpdateRate = 4, -- atualizacoes de filtro/texto por segundo
     },
     Fly = {
         Enabled = false,
@@ -771,17 +773,19 @@ slider(combat, "Alcance Silent", 50, 1500, function() return Config.Silent.MaxDi
 toggle(combat, "Silent: ignorar equipe", function() return Config.Silent.TeamCheck end,
     function(v) Config.Silent.TeamCheck = v end)
 
--- Visuals: HUD de posicoes que o cliente ja recebeu do servidor.
+-- Visuals: modelo 3D em vez de caixas 2D calculadas pela CPU.
 local visuals = tabPages.Visuals
-section(visuals, "ESP 2D", "Caixas e indicadores no HUD; nao ha bypass do anti-cheat.")
+section(visuals, "CHAMS ESP 3D", "Contorno no proprio personagem; sem projecao por frame.")
 toggle(visuals, "Ativar ESP", function() return Config.ESP.Enabled end, function(v) Config.ESP.Enabled = v end)
-toggle(visuals, "Mostrar caixas", function() return Config.ESP.ShowBox end, function(v) Config.ESP.ShowBox = v end)
+toggle(visuals, "Mostrar Chams 3D", function() return Config.ESP.ShowChams end, function(v) Config.ESP.ShowChams = v end)
+toggle(visuals, "Ver atraves de paredes", function() return Config.ESP.ThroughWalls end, function(v) Config.ESP.ThroughWalls = v end)
+slider(visuals, "Transparencia do Chams", 0, 100, function() return Config.ESP.FillTransparency end, function(v) Config.ESP.FillTransparency = v end, true, " %")
 toggle(visuals, "Mostrar nomes", function() return Config.ESP.ShowName end, function(v) Config.ESP.ShowName = v end)
 toggle(visuals, "Mostrar distancia", function() return Config.ESP.ShowDistance end, function(v) Config.ESP.ShowDistance = v end)
 toggle(visuals, "Ignorar mesma equipe", function() return Config.ESP.TeamCheck end, function(v) Config.ESP.TeamCheck = v end)
 toggle(visuals, "Ocultar jogadores mortos", function() return Config.ESP.HideDead end, function(v) Config.ESP.HideDead = v end)
 slider(visuals, "Distancia do ESP", 100, 2000, function() return Config.ESP.MaxDistance end, function(v) Config.ESP.MaxDistance = v end, true, " studs")
-slider(visuals, "Atualizacoes por segundo", 5, 30, function() return Config.ESP.UpdateRate end, function(v) Config.ESP.UpdateRate = v end, true, " Hz")
+slider(visuals, "Atualizacoes por segundo", 1, 12, function() return Config.ESP.UpdateRate end, function(v) Config.ESP.UpdateRate = v end, true, " Hz")
 
 -- Movement.
 local movement = tabPages.Movement
@@ -927,57 +931,88 @@ connect(minimizeBtn.MouseButton1Click, function()
     minimizeBtn.Text = minimized and "ABRIR" or "MIN"
 end)
 
+-- Chams ESP: um Highlight por avatar, com BillboardGui opcional.
+-- Nenhuma projecao de vertices, Drawing API ou calculo 2D por frame.
 local function hideESP(player)
-    local cache = espCache[player]
-    if cache and cache.Root.Parent then cache.Root.Visible = false end
+    local data = espCache[player]
+    if not data then return end
+    if data.Highlight and data.Highlight.Parent then data.Highlight.Enabled = false end
+    if data.Billboard and data.Billboard.Parent then data.Billboard.Enabled = false end
 end
 
 local function removeESP(player)
-    local cache = espCache[player]
-    if cache then
-        cache.Root:Destroy()
-        espCache[player] = nil
+    local data = espCache[player]
+    if not data then return end
+    if data.Highlight then
+        accentBindings[data.Highlight] = nil
+        data.Highlight:Destroy()
     end
+    if data.DistanceLabel then accentBindings[data.DistanceLabel] = nil end
+    if data.Billboard then data.Billboard:Destroy() end
+    espCache[player] = nil
 end
 
-local function getESP(player)
-    local found = espCache[player]
-    if found then return found end
-    local box = new("Frame", {
-        Name = "ESP_" .. tostring(player.UserId),
-        BackgroundTransparency = 1,
-        BorderSizePixel = 0,
-        Visible = false,
-        ZIndex = 4,
-    }, overlay)
-    local border = stroke(box, Config.Theme.Accent, 1.3, 0)
-    accent(border, "Color")
+local function getESP(player, character, headOrRoot)
+    local data = espCache[player]
+    if data and data.Character == character and
+        data.Highlight and data.Highlight.Parent and
+        data.Billboard and data.Billboard.Parent then
+        if data.Billboard.Adornee ~= headOrRoot then
+            data.Billboard.Adornee = headOrRoot
+        end
+        return data
+    end
+    if data then removeESP(player) end
+
+    local hl = new("Highlight", {
+        Name = "AstrendChams_" .. tostring(player.UserId),
+        Adornee = character,
+        Enabled = false,
+        DepthMode = Enum.HighlightDepthMode.AlwaysOnTop,
+        FillColor = Config.Theme.Accent,
+        OutlineColor = Config.Theme.Accent,
+        FillTransparency = Config.ESP.FillTransparency / 100,
+        OutlineTransparency = 0,
+    }, Workspace)
+    accent(hl, "FillColor")
+    -- Outline segue o mesmo destaque (RGB/verde)
+    local billboard = new("BillboardGui", {
+        Name = "AstrendTag_" .. tostring(player.UserId),
+        Adornee = headOrRoot,
+        Size = UDim2.fromOffset(210, 40),
+        StudsOffsetWorldSpace = Vector3.new(0, 2.6, 0),
+        AlwaysOnTop = true,
+        MaxDistance = Config.ESP.MaxDistance,
+        Enabled = false,
+        ResetOnSpawn = false,
+    }, PlayerGui)
     local nameLabel = new("TextLabel", {
-        AnchorPoint = Vector2.new(0.5, 1),
-        Position = UDim2.new(0.5, 0, 0, -4),
-        Size = UDim2.fromOffset(250, 19),
+        Size = UDim2.new(1, 0, 0, 22),
         BackgroundTransparency = 1,
         Font = Enum.Font.GothamBold,
         TextSize = 12,
-        TextStrokeTransparency = 0.4,
-        TextColor3 = Color3.fromRGB(250, 250, 250),
+        TextColor3 = Color3.fromRGB(255, 255, 255),
+        TextStrokeTransparency = 0.35,
         Text = player.DisplayName,
-        ZIndex = 5,
-    }, box)
+    }, billboard)
     local distanceLabel = new("TextLabel", {
-        AnchorPoint = Vector2.new(0.5, 0),
-        Position = UDim2.new(0.5, 0, 1, 4),
-        Size = UDim2.fromOffset(140, 16),
+        Position = UDim2.fromOffset(0, 22),
+        Size = UDim2.new(1, 0, 0, 18),
         BackgroundTransparency = 1,
         Font = Enum.Font.GothamMedium,
         TextSize = 11,
-        TextStrokeTransparency = 0.4,
         TextColor3 = Config.Theme.Accent,
+        TextStrokeTransparency = 0.3,
         Text = "",
-        ZIndex = 5,
-    }, box)
+    }, billboard)
     accent(distanceLabel, "TextColor3")
-    local data = {Root = box, Border = border, NameLabel = nameLabel, DistanceLabel = distanceLabel}
+    data = {
+        Character = character,
+        Highlight = hl,
+        Billboard = billboard,
+        NameLabel = nameLabel,
+        DistanceLabel = distanceLabel,
+    }
     espCache[player] = data
     return data
 end
@@ -986,58 +1021,14 @@ local function isTeammate(player)
     return player.Team ~= nil and LocalPlayer.Team ~= nil and player.Team == LocalPlayer.Team
 end
 
-local BODY_PARTS = {
-    Head = true, Torso = true, ["Left Arm"] = true, ["Right Arm"] = true,
-    ["Left Leg"] = true, ["Right Leg"] = true,
-    UpperTorso = true, LowerTorso = true,
-    LeftUpperArm = true, LeftLowerArm = true, LeftHand = true,
-    RightUpperArm = true, RightLowerArm = true, RightHand = true,
-    LeftUpperLeg = true, LeftLowerLeg = true, LeftFoot = true,
-    RightUpperLeg = true, RightLowerLeg = true, RightFoot = true,
-}
-
-local function projectCharacterBounds(camera, character)
-    local minX, minY = math.huge, math.huge
-    local maxX, maxY = -math.huge, -math.huge
-    local count = 0
-    local viewport = camera.ViewportSize
-    -- Somente corpo R6/R15. Acessorios, ferramentas e hitboxes sao ignorados.
-    for _, part in ipairs(character:GetChildren()) do
-        if part:IsA("BasePart") and BODY_PARTS[part.Name] then
-            local cf, half = part.CFrame, part.Size * 0.5
-            for ix = -1, 1, 2 do
-                for iy = -1, 1, 2 do
-                    for iz = -1, 1, 2 do
-                        local point = cf:PointToWorldSpace(Vector3.new(half.X * ix, half.Y * iy, half.Z * iz))
-                        local screen = camera:WorldToViewportPoint(point)
-                        if screen.Z <= 0.1 then return nil end
-                        minX = math.min(minX, screen.X)
-                        minY = math.min(minY, screen.Y)
-                        maxX = math.max(maxX, screen.X)
-                        maxY = math.max(maxY, screen.Y)
-                        count += 1
-                    end
-                end
-            end
-        end
-    end
-    if count == 0 or maxX < 0 or maxY < 0 or minX > viewport.X or minY > viewport.Y then
-        return nil
-    end
-    minX = math.max(0, minX - 1.5)
-    minY = math.max(0, minY - 1.5)
-    maxX = math.min(viewport.X, maxX + 1.5)
-    maxY = math.min(viewport.Y, maxY + 1.5)
-    local width, height = maxX - minX, maxY - minY
-    if width < 3 or height < 5 then return nil end
-    return minX, minY, width, height
-end
-
 local function renderESP(camera)
     if not Config.ESP.Enabled then
         for player in pairs(espCache) do hideESP(player) end
         return
     end
+    local cameraPosition = camera.CFrame.Position
+    local color = currentAccent()
+    local maxDistance = Config.ESP.MaxDistance
     for _, player in ipairs(Players:GetPlayers()) do
         if player == LocalPlayer then continue end
         local character = player.Character
@@ -1049,25 +1040,29 @@ local function renderESP(camera)
             hideESP(player)
             continue
         end
-        local dist = (camera.CFrame.Position - root.Position).Magnitude
-        if dist > Config.ESP.MaxDistance then
+        local distance = (cameraPosition - root.Position).Magnitude
+        if distance > maxDistance then
             hideESP(player)
             continue
         end
-        local minX, minY, width, height = projectCharacterBounds(camera, character)
-        if not minX then
-            hideESP(player)
-            continue
-        end
-        local data = getESP(player)
-        data.Root.Position = UDim2.fromOffset(minX, minY)
-        data.Root.Size = UDim2.fromOffset(width, height)
-        data.Root.Visible = true
-        data.Border.Enabled = Config.ESP.ShowBox
+
+        local head = character:FindFirstChild("Head")
+        local data = getESP(player, character, head or root)
+        local highlight = data.Highlight
+        highlight.Enabled = Config.ESP.ShowChams
+        highlight.DepthMode = Config.ESP.ThroughWalls
+            and Enum.HighlightDepthMode.AlwaysOnTop
+            or Enum.HighlightDepthMode.Occluded
+        highlight.FillColor = color
+        highlight.OutlineColor = color
+        highlight.FillTransparency = Config.ESP.FillTransparency / 100
+
+        data.Billboard.Enabled = Config.ESP.ShowName or Config.ESP.ShowDistance
+        data.Billboard.MaxDistance = maxDistance
         data.NameLabel.Visible = Config.ESP.ShowName
-        data.NameLabel.Text = player.DisplayName
         data.DistanceLabel.Visible = Config.ESP.ShowDistance
-        data.DistanceLabel.Text = string.format("~%.0f m", dist * 0.28)
+        data.NameLabel.Text = player.DisplayName
+        data.DistanceLabel.Text = string.format("~%.0f m", distance * 0.28)
     end
 end
 
@@ -1187,7 +1182,8 @@ connect(RunService.RenderStepped, function(deltaTime)
         lastESP = now
         renderESP(camera)
     end
-    if now - lastTheme >= 0.05 then
+    -- GUI em RGB nao precisa reprocessar todos os controles a 20 Hz.
+    if Config.Theme.RGB and now - lastTheme >= 0.1 then
         lastTheme = now
         applyAccent()
         refreshControls()
@@ -1200,4 +1196,4 @@ if resolveRemote() then
 else
     setStatus("HUD ativo. Vida, fome, sede e God Mode indisponiveis neste servidor.")
 end
-print("[ASTREND] Hub v2.2 carregado. Sem bypass de anti-cheat.")
+print("[ASTREND] Hub v2.3 carregado. Chams 3D sem bypass de anti-cheat.")
