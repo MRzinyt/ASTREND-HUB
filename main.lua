@@ -914,14 +914,13 @@ local function refreshLocalStatCache(force)
     lastStatScan = os.clock()
     lastStatCharacter = character
     for _, entries in pairs(localStatCache) do table.clear(entries) end
-    local roots = {
-        LocalPlayer, character,
-        LocalPlayer:FindFirstChild("leaderstats"),
-        LocalPlayer:FindFirstChild("Data"),
-        LocalPlayer:FindFirstChild("PlayerData"),
-        LocalPlayer:FindFirstChild("Stats"),
-        LocalPlayer:FindFirstChild("Status"),
-    }
+    -- Vetor sem lacunas: ipairs para no primeiro nil.
+    local roots = {LocalPlayer}
+    if character then table.insert(roots, character) end
+    for _, name in ipairs({"leaderstats", "Data", "PlayerData", "Stats", "Status"}) do
+        local container = LocalPlayer:FindFirstChild(name)
+        if container then table.insert(roots, container) end
+    end
     local scanned = {}
     local function track(item)
         if (item:IsA("IntValue") or item:IsA("NumberValue")) then
@@ -1181,7 +1180,7 @@ local function getESP(player, character, headOrRoot)
         OutlineColor = Config.Theme.Accent,
         FillTransparency = Config.ESP.FillTransparency / 100,
         OutlineTransparency = 0,
-    }, Workspace)
+    })
     accent(hl, "FillColor")
     -- Outline segue o mesmo destaque (RGB/verde)
     local billboard = new("BillboardGui", {
@@ -1193,7 +1192,7 @@ local function getESP(player, character, headOrRoot)
         MaxDistance = Config.ESP.MaxDistance,
         Enabled = false,
         ResetOnSpawn = false,
-    }, PlayerGui)
+    })
     local nameLabel = new("TextLabel", {
         Size = UDim2.new(1, 0, 0, 22),
         BackgroundTransparency = 1,
@@ -1221,6 +1220,9 @@ local function getESP(player, character, headOrRoot)
         NameLabel = nameLabel,
         DistanceLabel = distanceLabel,
     }
+    -- Tornar os elementos visiveis somente depois que tudo estiver pronto.
+    billboard.Parent = PlayerGui
+    hl.Parent = Workspace
     espCache[player] = data
     return data
 end
@@ -1231,7 +1233,7 @@ end
 
 local function renderESP(camera)
     if not Config.ESP.Enabled then
-        for player in pairs(espCache) do hideESP(player) end
+        for player in pairs(espCache) do removeESP(player) end
         return
     end
     local cameraPosition = camera.CFrame.Position
