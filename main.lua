@@ -1,103 +1,1052 @@
-                    DepthMode = Enum.HighlightDepthMode.Occluded,
-                }, dummy)
-                highlights[dummy] = hl
-            end
-        elseif highlights[dummy] then
-            highlights[dummy]:Destroy()
-            highlights[dummy] = nil
-        end
-        if Config.Training.Names then
-            if not highlightLabels[dummy] then
-                local bb = make("BillboardGui", {
-                    Name = "AstrendTrainingName",
-                    Adornee = part,
-                    Size = UDim2.fromOffset(190, 32),
-                    StudsOffset = Vector3.new(0, 3, 0),
-                    AlwaysOnTop = false,
-                }, gui)
-                local lbl = textLabel(bb, dummy.Name, 12, Palette.Text, Enum.Font.GothamBold, {
-                    Size = UDim2.fromScale(1, 1),
-                    TextXAlignment = Enum.TextXAlignment.Center,
-                    TextStrokeTransparency = 0.3,
-                })
-                highlightLabels[dummy] = bb
-            end
-            local lbl = highlightLabels[dummy]:FindFirstChildWhichIsA("TextLabel")
-            if lbl then lbl.Text = string.format("%s  |  %.0f studs", dummy.Name, dist) end
-        elseif highlightLabels[dummy] then
-            highlightLabels[dummy]:Destroy()
-            highlightLabels[dummy] = nil
-        end
+-- main.lua | Luau | Roblox client/executor | ASTREND HUB v2.0 (sem evasao de anti-cheat)
+-- Logo: publique ASTREND-LOGO-UPLOAD.png no Roblox Creator Dashboard e informe o ImageId.
+-- Funcoes que alteram dados persistentes exigem o servidor ASTREND autorizado.
+
+local Players = game:GetService("Players")
+local UIS = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
+local LocalPlayer = Players.LocalPlayer
+if not LocalPlayer then
+    warn("[ASTREND] LocalPlayer indisponivel; execute no cliente.")
+    return
+end
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+
+local Config = {
+    Brand = {
+        LogoImageId = 0, -- Substitua pelo ID da imagem publicada no Roblox.
+        Title = "ASTREND HUB",
+        Subtitle = "CONTROL CENTER  /  v2.0",
+    },
+    Theme = {
+        RGB = false,
+        RGBSpeed = 0.16,
+        Accent = Color3.fromRGB(124, 255, 0),
+        Scale = 1,
+    },
+    Aim = {
+        Enabled = false,
+        Key = Enum.KeyCode.E,
+        FOV = 140,
+        Smoothness = 10,
+        MaxDistance = 500,
+        TeamCheck = true,
+        WallCheck = true,
+        Prediction = 0.0,
+        ShowFOV = true,
+    },
+    ESP = {
+        Enabled = false,
+        ShowBox = true,
+        ShowName = true,
+        ShowDistance = true,
+        TeamCheck = true,
+        HideDead = true,
+        MaxDistance = 800,
+        UpdateRate = 20,
+    },
+    Fly = {
+        Enabled = false,
+        Key = Enum.KeyCode.F,
+        Speed = 40,
+    },
+    Player = {
+        GodMode = false,
+        AutoHeal = false,
+        AutoHealThreshold = 35,
+        InfiniteAmmo = false,
+        DesiredLevel = 10,
+    },
+}
+
+local active = true
+local connections = {}
+local espCache = {}
+local accentBindings = setmetatable({}, {__mode = "k"})
+local refreshers = {}
+local statusText
+local serverRemote
+local flyingHumanoid
+local aimHeld = false
+local lastESP = 0
+local lastTheme = 0
+
+local function connect(signal, fn)
+    local c = signal:Connect(fn)
+    table.insert(connections, c)
+    return c
+end
+
+local function new(class, properties, parent)
+    local item = Instance.new(class)
+    for key, value in pairs(properties or {}) do
+        item[key] = value
     end
-    for model, hl in pairs(highlights) do
-        if not seen[model] then hl:Destroy(); highlights[model] = nil end
-    end
-    for model, bb in pairs(highlightLabels) do
-        if not seen[model] then bb:Destroy(); highlightLabels[model] = nil end
+    if parent then item.Parent = parent end
+    return item
+end
+
+local function round(item, radius)
+    new("UICorner", {CornerRadius = UDim.new(0, radius or 8)}, item)
+    return item
+end
+
+local function stroke(item, color, thickness, transparency)
+    return new("UIStroke", {
+        Color = color or Color3.fromRGB(55, 59, 66),
+        Thickness = thickness or 1,
+        Transparency = transparency or 0,
+    }, item)
+end
+
+local function accent(item, property, multiplier)
+    accentBindings[item] = {Property = property, Multiplier = multiplier or 1}
+    return item
+end
+
+local function mix(color, multiplier)
+    return Color3.new(
+        math.clamp(color.R * multiplier, 0, 1),
+        math.clamp(color.G * multiplier, 0, 1),
+        math.clamp(color.B * multiplier, 0, 1)
+    )
+end
+
+local function currentAccent()
+    if not Config.Theme.RGB then return Config.Theme.Accent end
+    return Color3.fromHSV((os.clock() * Config.Theme.RGBSpeed) % 1, 0.94, 1)
+end
+
+local function applyAccent()
+    local color = currentAccent()
+    for item, binding in pairs(accentBindings) do
+        if item.Parent then
+            item[binding.Property] = mix(color, binding.Multiplier)
+        end
     end
 end
 
-local frameCounter = 0
-local tickCounter = 0
-local visualTimer = 0
-local themeTimer = 0
-local framesPerSecond = 60
-connect(RunService.RenderStepped, function(dt)
-    if closed then return end
-    frameCounter += 1
-    tickCounter += dt
-    visualTimer += dt
-    themeTimer += dt
-
-    if tickCounter >= 0.40 then
-        framesPerSecond = math.floor(frameCounter / tickCounter + 0.5)
-        frameCounter = 0
-        tickCounter = 0
-        if Config.Performance.FPS and Config.Performance.Coordinates then
-            local root = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-            if root then
-                local p = root.Position
-                footerStatus.Text = string.format("%d FPS  |  X %.0f  Y %.0f  Z %.0f", framesPerSecond, p.X, p.Y, p.Z)
-            else
-                footerStatus.Text = string.format("%d FPS  |  Personagem não carregado", framesPerSecond)
-            end
-        elseif Config.Performance.FPS then
-            footerStatus.Text = string.format("%d FPS", framesPerSecond)
-        elseif Config.Performance.Coordinates then
-            local root = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-            footerStatus.Text = root and string.format("X %.0f  Y %.0f  Z %.0f", root.Position.X, root.Position.Y, root.Position.Z) or "Sem personagem"
-        else
-            footerStatus.Text = "RightShift: mostrar / ocultar"
-        end
-        if playerInfoDescription then
-            playerInfoDescription.Text = string.format("Usuário: %s  |  FPS: %d  |  Studio: %s", LocalPlayer.Name, framesPerSecond, RunService:IsStudio() and "Sim" or "Não")
-        end
+local function setStatus(message, color)
+    if statusText and statusText.Parent then
+        statusText.Text = message
+        statusText.TextColor3 = color or Color3.fromRGB(158, 165, 172)
     end
+end
 
-    if Config.RGB and themeTimer >= 0.04 then
-        themeTimer = 0
-        currentAccent = Color3.fromHSV((os.clock() * Config.RGBSpeed) % 1, 1, 1)
-        refreshAccent()
+local function refreshControls()
+    for _, refresh in ipairs(refreshers) do
+        refresh()
     end
+end
 
-    if visualTimer >= 0.35 then
-        visualTimer = 0
-        updateTrainingVisuals()
+local function resolveRemote()
+    local candidate = ReplicatedStorage:FindFirstChild("AstrendHubAction")
+    if candidate and candidate:IsA("RemoteEvent") then
+        serverRemote = candidate
+    else
+        serverRemote = nil
     end
+    return serverRemote
+end
 
-    if isTrainingAvailable() and Config.Training.Enabled and aimHeld then
-        local camera = Workspace.CurrentCamera
-        if camera then
-            local part = getTrainingTarget(camera)
-            if part then
-                local cameraPos = camera.CFrame.Position
-                local goal = CFrame.lookAt(cameraPos, part.Position)
-                local alpha = math.clamp(dt * (35 / Config.Training.Smoothness), 0, 1)
-                camera.CFrame = camera.CFrame:Lerp(goal, alpha)
-            end
+local function serverAction(action, value)
+    local remote = resolveRemote()
+    if not remote then
+        setStatus("Servidor ASTREND indisponivel: recurso nao ativado.", Color3.fromRGB(255, 181, 91))
+        return false
+    end
+    local ok, err = pcall(function()
+        remote:FireServer(action, value)
+    end)
+    if not ok then
+        warn("[ASTREND] Falha ao enviar comando: " .. tostring(err))
+        setStatus("Falha na solicitacao ao servidor.", Color3.fromRGB(255, 181, 91))
+        return false
+    end
+    setStatus("Solicitacao enviada ao servidor (validacao pendente).")
+    return true
+end
+
+-- Evita duas interfaces sobrepostas na reexecucao.
+local sharedSession = (type(getgenv) == "function" and getgenv()) or _G
+if type(sharedSession.AstrendHubCleanup) == "function" then
+    pcall(sharedSession.AstrendHubCleanup)
+end
+local old = PlayerGui:FindFirstChild("AstrendHubV2")
+if old then old:Destroy() end
+
+local gui = new("ScreenGui", {
+    Name = "AstrendHubV2",
+    ResetOnSpawn = false,
+    IgnoreGuiInset = true,
+    DisplayOrder = 100,
+    ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+}, PlayerGui)
+
+local overlay = new("Frame", {
+    Name = "ESPOverlay",
+    BackgroundTransparency = 1,
+    Size = UDim2.fromScale(1, 1),
+    ZIndex = 2,
+}, gui)
+
+local fovCircle = round(new("Frame", {
+    Name = "AimFOV",
+    AnchorPoint = Vector2.new(0.5, 0.5),
+    Position = UDim2.fromScale(0.5, 0.5),
+    Size = UDim2.fromOffset(Config.Aim.FOV * 2, Config.Aim.FOV * 2),
+    BackgroundTransparency = 1,
+    Visible = false,
+    ZIndex = 3,
+}, overlay), 9999)
+local fovCorner = fovCircle:FindFirstChildOfClass("UICorner")
+fovCorner.CornerRadius = UDim.new(1, 0)
+accent(stroke(fovCircle, Config.Theme.Accent, 1.5, 0.12), "Color")
+
+local main = round(new("Frame", {
+    Name = "Main",
+    AnchorPoint = Vector2.new(0.5, 0.5),
+    Position = UDim2.fromScale(0.5, 0.5),
+    Size = UDim2.fromOffset(650, 440),
+    BackgroundColor3 = Color3.fromRGB(14, 16, 20),
+    BorderSizePixel = 0,
+    Active = true,
+    ZIndex = 10,
+}, gui), 14)
+accent(stroke(main, Config.Theme.Accent, 1.5, 0.15), "Color", 0.65)
+local scale = new("UIScale", {Scale = Config.Theme.Scale}, main)
+
+local header = new("Frame", {
+    Name = "Header",
+    Size = UDim2.new(1, 0, 0, 64),
+    BackgroundColor3 = Color3.fromRGB(18, 21, 25),
+    BorderSizePixel = 0,
+    Active = true,
+    ZIndex = 11,
+}, main)
+round(header, 14)
+new("Frame", {
+    Position = UDim2.new(0, 0, 1, -1),
+    Size = UDim2.new(1, 0, 0, 1),
+    BorderSizePixel = 0,
+    BackgroundColor3 = Color3.fromRGB(38, 43, 46),
+    ZIndex = 12,
+}, header)
+
+local logoWrap = round(new("Frame", {
+    Size = UDim2.fromOffset(46, 46),
+    Position = UDim2.fromOffset(14, 9),
+    BackgroundColor3 = Color3.fromRGB(4, 6, 6),
+    ZIndex = 12,
+}, header), 12)
+accent(stroke(logoWrap, Config.Theme.Accent, 1.6, 0), "Color")
+local logoImage = new("ImageLabel", {
+    Size = UDim2.fromScale(1, 1),
+    BackgroundTransparency = 1,
+    Image = Config.Brand.LogoImageId > 0 and ("rbxassetid://" .. tostring(Config.Brand.LogoImageId)) or "",
+    ScaleType = Enum.ScaleType.Fit,
+    ZIndex = 13,
+}, logoWrap)
+round(logoImage, 11)
+local fallbackLogo = new("TextLabel", {
+    Text = "A",
+    Size = UDim2.fromScale(1, 1),
+    BackgroundTransparency = 1,
+    Font = Enum.Font.GothamBlack,
+    TextSize = 30,
+    TextColor3 = Config.Theme.Accent,
+    Visible = Config.Brand.LogoImageId <= 0,
+    ZIndex = 13,
+}, logoWrap)
+accent(fallbackLogo, "TextColor3")
+
+new("TextLabel", {
+    Text = Config.Brand.Title,
+    Position = UDim2.fromOffset(72, 11),
+    Size = UDim2.fromOffset(340, 24),
+    BackgroundTransparency = 1,
+    Font = Enum.Font.GothamBold,
+    TextSize = 20,
+    TextColor3 = Color3.fromRGB(242, 246, 248),
+    TextXAlignment = Enum.TextXAlignment.Left,
+    ZIndex = 12,
+}, header)
+local subtitle = new("TextLabel", {
+    Text = Config.Brand.Subtitle,
+    Position = UDim2.fromOffset(73, 37),
+    Size = UDim2.fromOffset(350, 17),
+    BackgroundTransparency = 1,
+    Font = Enum.Font.GothamMedium,
+    TextSize = 10,
+    TextColor3 = Config.Theme.Accent,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    ZIndex = 12,
+}, header)
+accent(subtitle, "TextColor3")
+
+local function headerButton(symbol, rightOffset)
+    return round(new("TextButton", {
+        Text = symbol,
+        Position = UDim2.new(1, rightOffset, 0, 17),
+        Size = UDim2.fromOffset(28, 28),
+        BackgroundColor3 = Color3.fromRGB(38, 42, 48),
+        TextColor3 = Color3.fromRGB(220, 225, 230),
+        Font = Enum.Font.GothamBold,
+        TextSize = 16,
+        AutoButtonColor = true,
+        ZIndex = 12,
+    }, header), 7)
+end
+local minimizeBtn = headerButton("-", -73)
+local closeBtn = headerButton("X", -39)
+
+local body = new("Frame", {
+    Position = UDim2.fromOffset(0, 64),
+    Size = UDim2.new(1, 0, 1, -64),
+    BackgroundTransparency = 1,
+    ZIndex = 11,
+}, main)
+local sidebar = new("Frame", {
+    BackgroundColor3 = Color3.fromRGB(18, 21, 26),
+    BorderSizePixel = 0,
+    Size = UDim2.new(0, 151, 1, 0),
+    ZIndex = 11,
+}, body)
+new("Frame", {
+    Position = UDim2.new(1, -1, 0, 0),
+    Size = UDim2.new(0, 1, 1, 0),
+    BorderSizePixel = 0,
+    BackgroundColor3 = Color3.fromRGB(35, 39, 44),
+    ZIndex = 12,
+}, sidebar)
+
+local nav = new("Frame", {
+    Position = UDim2.fromOffset(10, 16),
+    Size = UDim2.new(1, -20, 0, 265),
+    BackgroundTransparency = 1,
+    ZIndex = 12,
+}, sidebar)
+new("UIListLayout", {Padding = UDim.new(0, 7), SortOrder = Enum.SortOrder.LayoutOrder}, nav)
+local content = new("Frame", {
+    Position = UDim2.fromOffset(151, 0),
+    Size = UDim2.new(1, -151, 1, 0),
+    BackgroundTransparency = 1,
+    ZIndex = 11,
+}, body)
+local tabPages = {}
+local tabButtons = {}
+local tabNames = {"Combat", "Visuals", "Movement", "Player", "Settings"}
+local activeTab = nil
+
+local function selectTab(name)
+    activeTab = name
+    for key, page in pairs(tabPages) do
+        page.Visible = key == name
+    end
+    for key, item in pairs(tabButtons) do
+        local chosen = key == name
+        item.Button.BackgroundColor3 = chosen and Color3.fromRGB(38, 46, 35) or Color3.fromRGB(25, 29, 34)
+        item.Marker.Visible = chosen
+        item.Button.TextColor3 = chosen and Color3.fromRGB(250, 250, 250) or Color3.fromRGB(160, 169, 176)
+    end
+end
+
+for index, name in ipairs(tabNames) do
+    local button = round(new("TextButton", {
+        Name = name .. "Tab",
+        Text = "   " .. name,
+        Size = UDim2.new(1, 0, 0, 39),
+        LayoutOrder = index,
+        BackgroundColor3 = Color3.fromRGB(25, 29, 34),
+        BorderSizePixel = 0,
+        Font = Enum.Font.GothamMedium,
+        TextSize = 12,
+        TextColor3 = Color3.fromRGB(170, 180, 185),
+        TextXAlignment = Enum.TextXAlignment.Left,
+        AutoButtonColor = false,
+        ZIndex = 12,
+    }, nav), 8)
+    local marker = round(new("Frame", {
+        Position = UDim2.fromOffset(0, 9),
+        Size = UDim2.fromOffset(3, 21),
+        BackgroundColor3 = Config.Theme.Accent,
+        BorderSizePixel = 0,
+        Visible = false,
+        ZIndex = 13,
+    }, button), 2)
+    accent(marker, "BackgroundColor3")
+    tabButtons[name] = {Button = button, Marker = marker}
+    local page = new("ScrollingFrame", {
+        Name = name .. "Page",
+        Size = UDim2.fromScale(1, 1),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        CanvasSize = UDim2.fromOffset(0, 0),
+        ScrollBarThickness = 3,
+        ScrollBarImageColor3 = Config.Theme.Accent,
+        ScrollingDirection = Enum.ScrollingDirection.Y,
+        Visible = false,
+        ZIndex = 11,
+    }, content)
+    accent(page, "ScrollBarImageColor3")
+    new("UIPadding", {
+        PaddingLeft = UDim.new(0, 18),
+        PaddingRight = UDim.new(0, 18),
+        PaddingTop = UDim.new(0, 18),
+        PaddingBottom = UDim.new(0, 22),
+    }, page)
+    new("UIListLayout", {
+        SortOrder = Enum.SortOrder.LayoutOrder,
+        Padding = UDim.new(0, 9),
+    }, page)
+    tabPages[name] = page
+    connect(button.MouseButton1Click, function() selectTab(name) end)
+end
+selectTab("Combat")
+
+statusText = new("TextLabel", {
+    Text = "ASTREND v2.0  |  Inicializado",
+    Position = UDim2.new(0, 10, 1, -58),
+    Size = UDim2.new(1, -20, 0, 55),
+    BackgroundTransparency = 1,
+    Font = Enum.Font.Gotham,
+    TextSize = 10,
+    TextWrapped = true,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    TextYAlignment = Enum.TextYAlignment.Bottom,
+    TextColor3 = Color3.fromRGB(157, 165, 171),
+    ZIndex = 12,
+}, sidebar)
+
+local function section(page, title, description)
+    local block = new("Frame", {
+        Size = UDim2.new(1, 0, 0, description and 48 or 26),
+        BackgroundTransparency = 1,
+        ZIndex = 12,
+    }, page)
+    local label = new("TextLabel", {
+        Text = title:upper(),
+        Size = UDim2.new(1, 0, 0, 23),
+        BackgroundTransparency = 1,
+        TextColor3 = Config.Theme.Accent,
+        Font = Enum.Font.GothamBold,
+        TextSize = 13,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 12,
+    }, block)
+    accent(label, "TextColor3")
+    if description then
+        new("TextLabel", {
+            Text = description,
+            Position = UDim2.fromOffset(0, 24),
+            Size = UDim2.new(1, 0, 0, 23),
+            BackgroundTransparency = 1,
+            TextColor3 = Color3.fromRGB(139, 147, 156),
+            Font = Enum.Font.Gotham,
+            TextSize = 10,
+            TextWrapped = true,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            ZIndex = 12,
+        }, block)
+    end
+end
+
+local function controlFrame(page, height)
+    local frame = round(new("Frame", {
+        Size = UDim2.new(1, 0, 0, height),
+        BackgroundColor3 = Color3.fromRGB(25, 29, 35),
+        BorderSizePixel = 0,
+        ZIndex = 12,
+    }, page), 9)
+    stroke(frame, Color3.fromRGB(45, 49, 55), 1, 0.3)
+    return frame
+end
+
+local function toggle(page, title, getter, setter)
+    local frame = controlFrame(page, 42)
+    local button = new("TextButton", {
+        Size = UDim2.fromScale(1, 1),
+        BackgroundTransparency = 1,
+        Text = "",
+        ZIndex = 14,
+    }, frame)
+    new("TextLabel", {
+        Text = title,
+        Size = UDim2.new(1, -80, 1, 0),
+        Position = UDim2.fromOffset(13, 0),
+        BackgroundTransparency = 1,
+        TextColor3 = Color3.fromRGB(222, 230, 231),
+        Font = Enum.Font.GothamMedium,
+        TextSize = 12,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 13,
+    }, frame)
+    local pill = round(new("Frame", {
+        Position = UDim2.new(1, -58, 0.5, -10),
+        Size = UDim2.fromOffset(43, 20),
+        BackgroundColor3 = Color3.fromRGB(65, 70, 77),
+        ZIndex = 13,
+    }, frame), 10)
+    local knob = round(new("Frame", {
+        Size = UDim2.fromOffset(16, 16),
+        BackgroundColor3 = Color3.fromRGB(245, 245, 245),
+        Position = UDim2.fromOffset(2, 2),
+        ZIndex = 14,
+    }, pill), 8)
+    local function refresh()
+        local enabled = getter()
+        pill.BackgroundColor3 = enabled and currentAccent() or Color3.fromRGB(66, 70, 77)
+        knob.Position = enabled and UDim2.fromOffset(25, 2) or UDim2.fromOffset(2, 2)
+    end
+    table.insert(refreshers, refresh)
+    connect(button.MouseButton1Click, function()
+        setter(not getter())
+        refresh()
+    end)
+    refresh()
+    return refresh
+end
+
+local function slider(page, title, minimum, maximum, getter, setter, integer, suffix)
+    local frame = controlFrame(page, 62)
+    new("TextLabel", {
+        Text = title,
+        Position = UDim2.fromOffset(13, 7),
+        Size = UDim2.new(1, -100, 0, 21),
+        BackgroundTransparency = 1,
+        TextColor3 = Color3.fromRGB(222, 230, 231),
+        Font = Enum.Font.GothamMedium,
+        TextSize = 12,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 13,
+    }, frame)
+    local readout = new("TextLabel", {
+        Text = "",
+        Position = UDim2.new(1, -87, 0, 8),
+        Size = UDim2.fromOffset(73, 20),
+        BackgroundTransparency = 1,
+        TextColor3 = Config.Theme.Accent,
+        Font = Enum.Font.GothamBold,
+        TextSize = 11,
+        TextXAlignment = Enum.TextXAlignment.Right,
+        ZIndex = 13,
+    }, frame)
+    accent(readout, "TextColor3")
+    local track = round(new("Frame", {
+        Position = UDim2.new(0, 14, 0, 43),
+        Size = UDim2.new(1, -28, 0, 5),
+        BackgroundColor3 = Color3.fromRGB(58, 65, 69),
+        ZIndex = 13,
+    }, frame), 4)
+    local fill = round(new("Frame", {
+        Size = UDim2.fromScale(0, 1),
+        BackgroundColor3 = Config.Theme.Accent,
+        ZIndex = 14,
+    }, track), 4)
+    accent(fill, "BackgroundColor3")
+    local handle = round(new("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Size = UDim2.fromOffset(12, 12),
+        Position = UDim2.fromScale(0, 0.5),
+        BackgroundColor3 = Color3.fromRGB(243, 248, 241),
+        ZIndex = 15,
+    }, track), 6)
+    local dragging = false
+    local function refresh()
+        local value = math.clamp(getter(), minimum, maximum)
+        local fraction = (value - minimum) / (maximum - minimum)
+        readout.Text = (integer and tostring(math.floor(value)) or string.format("%.2f", value)) .. (suffix or "")
+        fill.Size = UDim2.fromScale(fraction, 1)
+        handle.Position = UDim2.fromScale(fraction, 0.5)
+    end
+    local function update(screenX)
+        if track.AbsoluteSize.X <= 0 then return end
+        local fraction = math.clamp((screenX - track.AbsolutePosition.X) / track.AbsoluteSize.X, 0, 1)
+        local value = minimum + fraction * (maximum - minimum)
+        if integer then value = math.floor(value + 0.5) end
+        setter(value)
+        refresh()
+    end
+    connect(frame.InputBegan, function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            update(input.Position.X)
         end
+    end)
+    connect(UIS.InputChanged, function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+            update(input.Position.X)
+        end
+    end)
+    connect(UIS.InputEnded, function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
+        end
+    end)
+    table.insert(refreshers, refresh)
+    refresh()
+end
+
+local function keybind(page, title, getter, setter)
+    local frame = controlFrame(page, 42)
+    new("TextLabel", {
+        Text = title,
+        Size = UDim2.new(1, -105, 1, 0),
+        Position = UDim2.fromOffset(13, 0),
+        BackgroundTransparency = 1,
+        TextColor3 = Color3.fromRGB(222, 230, 231),
+        Font = Enum.Font.GothamMedium,
+        TextSize = 12,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 13,
+    }, frame)
+    local button = round(new("TextButton", {
+        Position = UDim2.new(1, -88, 0.5, -13),
+        Size = UDim2.fromOffset(73, 26),
+        BackgroundColor3 = Color3.fromRGB(45, 51, 55),
+        TextColor3 = Color3.fromRGB(240, 245, 245),
+        Font = Enum.Font.GothamBold,
+        TextSize = 11,
+        ZIndex = 14,
+    }, frame), 6)
+    local listening = false
+    local function refresh()
+        if not listening then button.Text = getter().Name end
+    end
+    connect(button.MouseButton1Click, function()
+        listening = true
+        button.Text = "TECLA..."
+    end)
+    connect(UIS.InputBegan, function(input, processed)
+        if not listening or processed then return end
+        if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
+        listening = false
+        if input.KeyCode ~= Enum.KeyCode.Escape then setter(input.KeyCode) end
+        refresh()
+    end)
+    table.insert(refreshers, refresh)
+    refresh()
+end
+
+local function buttonControl(page, title, callback)
+    local frame = controlFrame(page, 42)
+    local button = new("TextButton", {
+        Size = UDim2.fromScale(1, 1),
+        BackgroundTransparency = 1,
+        Text = title,
+        Font = Enum.Font.GothamBold,
+        TextSize = 12,
+        TextColor3 = Config.Theme.Accent,
+        ZIndex = 14,
+    }, frame)
+    accent(button, "TextColor3")
+    connect(button.MouseButton1Click, callback)
+end
+
+local function textInput(page, title, initial, callback)
+    local frame = controlFrame(page, 70)
+    new("TextLabel", {
+        Text = title,
+        Size = UDim2.new(1, -20, 0, 20),
+        Position = UDim2.fromOffset(13, 5),
+        BackgroundTransparency = 1,
+        TextColor3 = Color3.fromRGB(222, 230, 231),
+        Font = Enum.Font.GothamMedium,
+        TextSize = 12,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 13,
+    }, frame)
+    local field = round(new("TextBox", {
+        Text = tostring(initial),
+        PlaceholderText = "Digite um valor",
+        Size = UDim2.new(1, -27, 0, 30),
+        Position = UDim2.fromOffset(13, 29),
+        BackgroundColor3 = Color3.fromRGB(37, 42, 48),
+        TextColor3 = Color3.fromRGB(235, 240, 240),
+        Font = Enum.Font.Gotham,
+        TextSize = 13,
+        ClearTextOnFocus = false,
+        ZIndex = 13,
+    }, frame), 6)
+    connect(field.FocusLost, function(enterPressed)
+        if enterPressed then callback(field.Text) end
+    end)
+    return field
+end
+
+-- Combat: mira assistida por camera; nao altera remotes de armas nem faz hook.
+local combat = tabPages.Combat
+section(combat, "Mira", "Ativacao manual. Sem interceptacao do protocolo do jogo.")
+toggle(combat, "Ativar Aimbot", function() return Config.Aim.Enabled end, function(v) Config.Aim.Enabled = v end)
+toggle(combat, "Mostrar circulo FOV", function() return Config.Aim.ShowFOV end, function(v) Config.Aim.ShowFOV = v end)
+slider(combat, "FOV", 30, 400, function() return Config.Aim.FOV end, function(v) Config.Aim.FOV = v end, true, "px")
+slider(combat, "Suavizacao", 1, 35, function() return Config.Aim.Smoothness end, function(v) Config.Aim.Smoothness = v end, true)
+slider(combat, "Alcance maximo", 50, 1500, function() return Config.Aim.MaxDistance end, function(v) Config.Aim.MaxDistance = v end, true, " studs")
+toggle(combat, "Ignorar mesma equipe", function() return Config.Aim.TeamCheck end, function(v) Config.Aim.TeamCheck = v end)
+toggle(combat, "Checar obstrucao", function() return Config.Aim.WallCheck end, function(v) Config.Aim.WallCheck = v end)
+keybind(combat, "Tecla de mira", function() return Config.Aim.Key end, function(v) Config.Aim.Key = v end)
+
+-- Visuals: HUD de posicoes que o cliente ja recebeu do servidor.
+local visuals = tabPages.Visuals
+section(visuals, "ESP 2D", "Caixas e indicadores no HUD; nao ha bypass do anti-cheat.")
+toggle(visuals, "Ativar ESP", function() return Config.ESP.Enabled end, function(v) Config.ESP.Enabled = v end)
+toggle(visuals, "Mostrar caixas", function() return Config.ESP.ShowBox end, function(v) Config.ESP.ShowBox = v end)
+toggle(visuals, "Mostrar nomes", function() return Config.ESP.ShowName end, function(v) Config.ESP.ShowName = v end)
+toggle(visuals, "Mostrar distancia", function() return Config.ESP.ShowDistance end, function(v) Config.ESP.ShowDistance = v end)
+toggle(visuals, "Ignorar mesma equipe", function() return Config.ESP.TeamCheck end, function(v) Config.ESP.TeamCheck = v end)
+toggle(visuals, "Ocultar jogadores mortos", function() return Config.ESP.HideDead end, function(v) Config.ESP.HideDead = v end)
+slider(visuals, "Distancia do ESP", 100, 2000, function() return Config.ESP.MaxDistance end, function(v) Config.ESP.MaxDistance = v end, true, " studs")
+slider(visuals, "Atualizacoes por segundo", 5, 30, function() return Config.ESP.UpdateRate end, function(v) Config.ESP.UpdateRate = v end, true, " Hz")
+
+-- Movement.
+local movement = tabPages.Movement
+section(movement, "Movimentacao", "Movimento local sujeito a validacao do servidor.")
+local function setFly(enabled)
+    Config.Fly.Enabled = enabled
+    if not enabled and flyingHumanoid and flyingHumanoid.Parent then
+        flyingHumanoid.PlatformStand = false
+        flyingHumanoid.AutoRotate = true
+    end
+    if not enabled then
+        local character = LocalPlayer.Character
+        local root = character and character:FindFirstChild("HumanoidRootPart")
+        if root then root.AssemblyLinearVelocity = Vector3.zero end
+        flyingHumanoid = nil
+    end
+end
+toggle(movement, "Ativar Fly", function() return Config.Fly.Enabled end, setFly)
+slider(movement, "Velocidade do Fly", 5, 100, function() return Config.Fly.Speed end, function(v) Config.Fly.Speed = v end, true)
+keybind(movement, "Tecla de Fly", function() return Config.Fly.Key end, function(v) Config.Fly.Key = v end)
+
+-- Funcoes do jogador: alteracoes reais sao executadas apenas por servidor proprio.
+local playerPage = tabPages.Player
+local healThresholdToken = 0
+section(playerPage, "Personagem", "Vida, municao e nivel requerem AstrendServer.server.lua no seu jogo.")
+toggle(playerPage, "God Mode", function() return Config.Player.GodMode end, function(v)
+    if serverAction("GodMode", v) then Config.Player.GodMode = v end
+end)
+toggle(playerPage, "Auto-Heal (vida baixa)", function() return Config.Player.AutoHeal end, function(v)
+    if serverAction("AutoHeal", {Enabled = v, Threshold = Config.Player.AutoHealThreshold}) then
+        Config.Player.AutoHeal = v
+    end
+end)
+slider(playerPage, "Ativar cura abaixo de", 10, 90,
+    function() return Config.Player.AutoHealThreshold end,
+    function(v)
+        Config.Player.AutoHealThreshold = v
+        if Config.Player.AutoHeal then
+            healThresholdToken += 1
+            local token = healThresholdToken
+            task.delay(0.2, function()
+                if active and token == healThresholdToken then
+                    serverAction("HealThreshold", v)
+                end
+            end)
+        end
+    end, true, "%")
+buttonControl(playerPage, "RECUPERAR VIDA AGORA", function() serverAction("HealNow") end)
+toggle(playerPage, "Municao infinita", function() return Config.Player.InfiniteAmmo end, function(v)
+    if serverAction("InfiniteAmmo", v) then Config.Player.InfiniteAmmo = v end
+end)
+local levelField = textInput(playerPage, "Nivel desejado", Config.Player.DesiredLevel, function(value)
+    local amount = tonumber(value)
+    if amount then Config.Player.DesiredLevel = math.clamp(math.floor(amount), 1, 999) end
+end)
+buttonControl(playerPage, "APLICAR NIVEL NO SERVIDOR", function()
+    local amount = tonumber(levelField.Text)
+    if not amount then
+        setStatus("Nivel invalido.", Color3.fromRGB(255, 181, 91))
+        return
+    end
+    Config.Player.DesiredLevel = math.clamp(math.floor(amount), 1, 999)
+    serverAction("SetLevel", Config.Player.DesiredLevel)
+end)
+
+-- Settings.
+local settings = tabPages.Settings
+section(settings, "Identidade Visual", "Verde ASTREND ou RGB automatico em todos os detalhes.")
+toggle(settings, "RGB automatico", function() return Config.Theme.RGB end, function(v)
+    Config.Theme.RGB = v
+    applyAccent()
+    refreshControls()
+end)
+slider(settings, "Velocidade RGB", 0.03, 0.65, function() return Config.Theme.RGBSpeed end,
+    function(v) Config.Theme.RGBSpeed = v end, false)
+slider(settings, "Escala da interface", 0.7, 1.2, function() return Config.Theme.Scale end,
+    function(v) Config.Theme.Scale = v; scale.Scale = v end, false)
+buttonControl(settings, "RESTAURAR VERDE ASTREND", function()
+    Config.Theme.RGB = false
+    applyAccent()
+    refreshControls()
+end)
+section(settings, "Conexao", "Somente jogos que instalaram o servidor ASTREND aceitam acoes de administracao.")
+buttonControl(settings, "VERIFICAR SERVIDOR", function()
+    if resolveRemote() then
+        setStatus("Canal ASTREND localizado; permissoes validadas pelo servidor.", Config.Theme.Accent)
+    else
+        setStatus("Sem servidor ASTREND instalado.", Color3.fromRGB(255, 181, 91))
     end
 end)
 
-refreshAccent()
-print("[ASTREND HUB] Studio Edition carregada com segurança.")
+-- Interacao da janela.
+local dragging = false
+local dragStart, windowStart
+connect(header.InputBegan, function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        windowStart = main.Position
+    end
+end)
+connect(UIS.InputChanged, function(input)
+    if not dragging then return end
+    if input.UserInputType ~= Enum.UserInputType.MouseMovement and input.UserInputType ~= Enum.UserInputType.Touch then return end
+    local delta = input.Position - dragStart
+    main.Position = UDim2.new(
+        windowStart.X.Scale, windowStart.X.Offset + delta.X / scale.Scale,
+        windowStart.Y.Scale, windowStart.Y.Offset + delta.Y / scale.Scale
+    )
+end)
+connect(UIS.InputEnded, function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = false
+    end
+end)
+local minimized = false
+connect(minimizeBtn.MouseButton1Click, function()
+    minimized = not minimized
+    body.Visible = not minimized
+    main.Size = minimized and UDim2.fromOffset(650, 64) or UDim2.fromOffset(650, 440)
+    minimizeBtn.Text = minimized and "+" or "-"
+end)
+
+local function hideESP(player)
+    local cache = espCache[player]
+    if cache and cache.Root.Parent then cache.Root.Visible = false end
+end
+
+local function removeESP(player)
+    local cache = espCache[player]
+    if cache then
+        cache.Root:Destroy()
+        espCache[player] = nil
+    end
+end
+
+local function getESP(player)
+    local found = espCache[player]
+    if found then return found end
+    local box = new("Frame", {
+        Name = "ESP_" .. tostring(player.UserId),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        Visible = false,
+        ZIndex = 4,
+    }, overlay)
+    local border = stroke(box, Config.Theme.Accent, 1.3, 0)
+    accent(border, "Color")
+    local nameLabel = new("TextLabel", {
+        AnchorPoint = Vector2.new(0.5, 1),
+        Position = UDim2.new(0.5, 0, 0, -4),
+        Size = UDim2.fromOffset(250, 19),
+        BackgroundTransparency = 1,
+        Font = Enum.Font.GothamBold,
+        TextSize = 12,
+        TextStrokeTransparency = 0.4,
+        TextColor3 = Color3.fromRGB(250, 250, 250),
+        Text = player.DisplayName,
+        ZIndex = 5,
+    }, box)
+    local distanceLabel = new("TextLabel", {
+        AnchorPoint = Vector2.new(0.5, 0),
+        Position = UDim2.new(0.5, 0, 1, 4),
+        Size = UDim2.fromOffset(140, 16),
+        BackgroundTransparency = 1,
+        Font = Enum.Font.GothamMedium,
+        TextSize = 11,
+        TextStrokeTransparency = 0.4,
+        TextColor3 = Config.Theme.Accent,
+        Text = "",
+        ZIndex = 5,
+    }, box)
+    accent(distanceLabel, "TextColor3")
+    local data = {Root = box, Border = border, NameLabel = nameLabel, DistanceLabel = distanceLabel}
+    espCache[player] = data
+    return data
+end
+
+local function isTeammate(player)
+    return player.Team ~= nil and LocalPlayer.Team ~= nil and player.Team == LocalPlayer.Team
+end
+
+local function renderESP(camera)
+    if not Config.ESP.Enabled then
+        for player in pairs(espCache) do hideESP(player) end
+        return
+    end
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player == LocalPlayer then continue end
+        local character = player.Character
+        local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+        local root = character and character:FindFirstChild("HumanoidRootPart")
+        local head = character and character:FindFirstChild("Head")
+        if not humanoid or not root or not head or
+            (Config.ESP.HideDead and humanoid.Health <= 0) or
+            (Config.ESP.TeamCheck and isTeammate(player)) then
+            hideESP(player)
+            continue
+        end
+        local dist = (camera.CFrame.Position - root.Position).Magnitude
+        if dist > Config.ESP.MaxDistance then
+            hideESP(player)
+            continue
+        end
+        local top, topVisible = camera:WorldToViewportPoint(head.Position + Vector3.new(0, 0.8, 0))
+        local bottom, bottomVisible = camera:WorldToViewportPoint(root.Position - Vector3.new(0, 3.3, 0))
+        if not (topVisible and bottomVisible) or top.Z <= 0 or bottom.Z <= 0 then
+            hideESP(player)
+            continue
+        end
+        local height = math.abs(bottom.Y - top.Y)
+        local width = height * 0.47
+        if height < 5 then hideESP(player); continue end
+        local data = getESP(player)
+        data.Root.Position = UDim2.fromOffset(top.X - width / 2, top.Y)
+        data.Root.Size = UDim2.fromOffset(width, height)
+        data.Root.Visible = true
+        data.Border.Enabled = Config.ESP.ShowBox
+        data.NameLabel.Visible = Config.ESP.ShowName
+        data.NameLabel.Text = player.DisplayName
+        data.DistanceLabel.Visible = Config.ESP.ShowDistance
+        data.DistanceLabel.Text = string.format("%.0f m", dist * 0.28)
+    end
+end
+
+local function selectTarget(camera)
+    local viewport = camera.ViewportSize
+    local middle = Vector2.new(viewport.X * 0.5, viewport.Y * 0.5)
+    local best, bestDistance = nil, math.huge
+    local rayParams = RaycastParams.new()
+    rayParams.FilterType = Enum.RaycastFilterType.Exclude
+    rayParams.FilterDescendantsInstances = LocalPlayer.Character and {LocalPlayer.Character} or {}
+    rayParams.IgnoreWater = true
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player == LocalPlayer then continue end
+        if Config.Aim.TeamCheck and isTeammate(player) then continue end
+        local character = player.Character
+        local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+        local head = character and character:FindFirstChild("Head")
+        if not humanoid or humanoid.Health <= 0 or not head then continue end
+        local distance = (head.Position - camera.CFrame.Position).Magnitude
+        if distance > Config.Aim.MaxDistance then continue end
+        local screen, visible = camera:WorldToViewportPoint(head.Position)
+        if not visible or screen.Z <= 0 then continue end
+        local radius = (Vector2.new(screen.X, screen.Y) - middle).Magnitude
+        if radius > Config.Aim.FOV or radius >= bestDistance then continue end
+        if Config.Aim.WallCheck then
+            local ray = Workspace:Raycast(camera.CFrame.Position, head.Position - camera.CFrame.Position, rayParams)
+            if ray and not ray.Instance:IsDescendantOf(character) then continue end
+        end
+        best = head
+        bestDistance = radius
+    end
+    return best
+end
+
+local function renderFly(camera)
+    if not Config.Fly.Enabled then return end
+    local character = LocalPlayer.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    local root = character and character:FindFirstChild("HumanoidRootPart")
+    if not humanoid or not root or humanoid.Health <= 0 then return end
+    if flyingHumanoid ~= humanoid then
+        if flyingHumanoid and flyingHumanoid.Parent then
+            flyingHumanoid.PlatformStand = false
+            flyingHumanoid.AutoRotate = true
+        end
+        flyingHumanoid = humanoid
+    end
+    humanoid.PlatformStand = true
+    humanoid.AutoRotate = false
+    local vec = Vector3.zero
+    local cf = camera.CFrame
+    if UIS:IsKeyDown(Enum.KeyCode.W) then vec += cf.LookVector end
+    if UIS:IsKeyDown(Enum.KeyCode.S) then vec -= cf.LookVector end
+    if UIS:IsKeyDown(Enum.KeyCode.A) then vec -= cf.RightVector end
+    if UIS:IsKeyDown(Enum.KeyCode.D) then vec += cf.RightVector end
+    if UIS:IsKeyDown(Enum.KeyCode.Space) then vec += Vector3.yAxis end
+    if UIS:IsKeyDown(Enum.KeyCode.LeftControl) or UIS:IsKeyDown(Enum.KeyCode.LeftShift) then vec -= Vector3.yAxis end
+    root.AssemblyLinearVelocity = vec.Magnitude > 0 and vec.Unit * Config.Fly.Speed or Vector3.zero
+end
+
+local function destroy()
+    if not active then return end
+    active = false
+    setFly(false)
+    for _, connection in ipairs(connections) do connection:Disconnect() end
+    for player in pairs(espCache) do removeESP(player) end
+    if sharedSession.AstrendHubCleanup == destroy then
+        sharedSession.AstrendHubCleanup = nil
+    end
+    gui:Destroy()
+end
+sharedSession.AstrendHubCleanup = destroy
+connect(closeBtn.MouseButton1Click, destroy)
+connect(Players.PlayerRemoving, removeESP)
+connect(LocalPlayer.CharacterRemoving, function()
+    if flyingHumanoid then
+        flyingHumanoid.PlatformStand = false
+        flyingHumanoid.AutoRotate = true
+    end
+    flyingHumanoid = nil
+end)
+connect(UIS.InputBegan, function(input, processed)
+    if processed then return end
+    if UIS:GetFocusedTextBox() then return end
+    if input.KeyCode == Config.Aim.Key then aimHeld = true end
+    if input.KeyCode == Config.Fly.Key then
+        setFly(not Config.Fly.Enabled)
+        refreshControls()
+    end
+end)
+connect(UIS.InputEnded, function(input)
+    if input.KeyCode == Config.Aim.Key then aimHeld = false end
+end)
+connect(RunService.RenderStepped, function(deltaTime)
+    if not active or not gui.Parent then return end
+    local camera = Workspace.CurrentCamera
+    if not camera then return end
+    fovCircle.Visible = Config.Aim.Enabled and Config.Aim.ShowFOV
+    fovCircle.Size = UDim2.fromOffset(Config.Aim.FOV * 2, Config.Aim.FOV * 2)
+    if Config.Aim.Enabled and aimHeld then
+        local target = selectTarget(camera)
+        if target then
+            local desired = CFrame.lookAt(camera.CFrame.Position, target.Position)
+            local alpha = 1 - math.exp(-deltaTime * (40 / math.max(Config.Aim.Smoothness, 1)))
+            camera.CFrame = camera.CFrame:Lerp(desired, math.clamp(alpha, 0, 1))
+        end
+    end
+    if Config.Fly.Enabled then renderFly(camera) end
+    local now = os.clock()
+    if now - lastESP >= 1 / Config.ESP.UpdateRate then
+        lastESP = now
+        renderESP(camera)
+    end
+    if now - lastTheme >= 0.05 then
+        lastTheme = now
+        applyAccent()
+        refreshControls()
+    end
+end)
+
+applyAccent()
+if resolveRemote() then
+    setStatus("Canal ASTREND encontrado. Servidor valida permissoes.", Config.Theme.Accent)
+else
+    setStatus("HUD pronto. Vida/municao/nivel exigem servidor ASTREND.")
+end
+print("[ASTREND] Hub v2.0 carregado. Sem bypass de anti-cheat.")
