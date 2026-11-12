@@ -38,14 +38,15 @@ local function fillNeed(player, category)
     local names = NEED_PATHS[category]
     if not names then return false end
     local character = player.Character
-    local roots = {
-        player,
-        character,
-        player:FindFirstChild("leaderstats"),
-        player:FindFirstChild("Stats"),
-        player:FindFirstChild("Data"),
-        character and character:FindFirstChild("Stats"),
-    }
+    local roots = {player}
+    local function addRoot(item)
+        if item then table.insert(roots, item) end
+    end
+    addRoot(character)
+    addRoot(player:FindFirstChild("leaderstats"))
+    addRoot(player:FindFirstChild("Stats"))
+    addRoot(player:FindFirstChild("Data"))
+    addRoot(character and character:FindFirstChild("Stats"))
     for _, root in ipairs(roots) do
         if root then
             for _, name in ipairs(names) do
