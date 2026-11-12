@@ -1,4 +1,4 @@
--- AstrendServer.server.lua | Luau | Roblox ServerScriptService | ASTREND HUB v2.0
+-- AstrendServer.server.lua | Luau | Roblox ServerScriptService | ASTREND HUB v2.1
 -- Instale somente numa experiencia Roblox que voce controla.
 -- Em experiencias pessoais, o proprio CreatorId e autorizado automaticamente.
 -- Em experiencias de grupo, adicione os UserIds dos administradores em EXTRA_ADMINS.
@@ -22,6 +22,48 @@ assert(remote:IsA("RemoteEvent"), "[ASTREND] AstrendHubAction deve ser RemoteEve
 
 local state = {}
 local rateLimit = {}
+
+local function reply(player, action, ok, message)
+    remote:FireClient(player, action, ok == true, message)
+end
+
+-- Ajuste FULL_VALUE e NEED_PATHS para as necessidades da sua propria experiencia.
+local FULL_VALUE = 100
+local NEED_PATHS = {
+    Hunger = {"Hunger", "Fome", "Food"},
+    Thirst = {"Thirst", "Sede", "Water"},
+}
+
+local function fillNeed(player, category)
+    local names = NEED_PATHS[category]
+    if not names then return false end
+    local character = player.Character
+    local roots = {
+        player,
+        character,
+        player:FindFirstChild("leaderstats"),
+        player:FindFirstChild("Stats"),
+        player:FindFirstChild("Data"),
+        character and character:FindFirstChild("Stats"),
+    }
+    for _, root in ipairs(roots) do
+        if root then
+            for _, name in ipairs(names) do
+                local currentAttribute = root:GetAttribute(name)
+                if typeof(currentAttribute) == "number" then
+                    root:SetAttribute(name, FULL_VALUE)
+                    return true
+                end
+                local child = root:FindFirstChild(name)
+                if child and (child:IsA("IntValue") or child:IsA("NumberValue")) then
+                    child.Value = FULL_VALUE
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
 
 local function authorized(player)
     if EXTRA_ADMINS[player.UserId] == true then return true end
@@ -96,7 +138,10 @@ local function applyLevel(player, level)
 end
 
 remote.OnServerEvent:Connect(function(player, action, value)
-    if not authorized(player) then return end
+    if not authorized(player) then
+        reply(player, tostring(action), false, "ASTREND: usuario sem permissao neste servidor.")
+        return
+    end
     if type(action) ~= "string" or #action > 32 then return end
 
     local now = os.clock()
@@ -104,32 +149,45 @@ remote.OnServerEvent:Connect(function(player, action, value)
     rateLimit[player] = now
 
     local config = ensureState(player)
+    local ok, message = false, "Acao desconhecida ou parametros invalidos."
     if action == "HealNow" then
-        heal(player)
+        ok = heal(player)
+        message = ok and "Vida recuperada pelo servidor." or "Personagem sem vida ativa."
     elseif action == "GodMode" and type(value) == "boolean" then
         config.GodMode = value
         if value then heal(player) end
+        ok, message = true, "God Mode " .. (value and "habilitado" or "desabilitado") .. "."
     elseif action == "AutoHeal" and type(value) == "table" then
-        if type(value.Enabled) == "boolean" then
-            config.AutoHeal = value.Enabled
-        end
+        if type(value.Enabled) == "boolean" then config.AutoHeal = value.Enabled end
         if type(value.Threshold) == "number" and value.Threshold == value.Threshold then
             config.HealThreshold = math.clamp(math.floor(value.Threshold), 10, 90)
         end
-    elseif action == "HealThreshold" and type(value) == "number" then
-        if value == value then
-            config.HealThreshold = math.clamp(math.floor(value), 10, 90)
+        ok, message = true, "Auto-Heal configurado pelo servidor."
+    elseif action == "HealThreshold" and type(value) == "number" and value == value then
+        config.HealThreshold = math.clamp(math.floor(value), 10, 90)
+        ok, message = true, "Limite de cura atualizado."
+    elseif action == "FillHunger" or action == "FillThirst" or action == "FillNeeds" then
+        local hunger = action ~= "FillThirst" and fillNeed(player, "Hunger")
+        local thirst = action ~= "FillHunger" and fillNeed(player, "Thirst")
+        if action == "FillHunger" then
+            ok = hunger
+        elseif action == "FillThirst" then
+            ok = thirst
+        else
+            ok = hunger and thirst
         end
+        message = ok and "Necessidade preenchida pelo servidor." or
+            "Indicador nao encontrado. Configure NEED_PATHS conforme seu jogo."
     elseif action == "InfiniteAmmo" and type(value) == "boolean" then
         config.InfiniteAmmo = value
         if value then applyAmmo(player) end
-    elseif action == "SetLevel" and type(value) == "number" then
-        if value == value and value >= 1 and value <= 999 then
-            applyLevel(player, math.floor(value))
-        end
+        ok, message = true, "Municao infinita " .. (value and "ativada" or "desativada") .. "."
+    elseif action == "SetLevel" and type(value) == "number" and value == value and value >= 1 and value <= 999 then
+        ok = applyLevel(player, math.floor(value))
+        message = ok and "Nivel alterado." or "Valor de nivel nao encontrado no leaderstats."
     end
+    reply(player, action, ok, message)
 end)
-
 Players.PlayerRemoving:Connect(function(player)
     state[player] = nil
     rateLimit[player] = nil
